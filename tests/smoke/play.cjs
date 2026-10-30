@@ -110,6 +110,125 @@ check('fog: floor inside the cone is more than 2x brighter than behind the playe
   assert.ok(px[0] > behind[0] * 2, `inside r=${px[0]} behind r=${behind[0]}`);
 });
 
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const pixel = (page, x, y) =>
+  page.evaluate(
+    ([px, py]) => Array.from(document.querySelector('canvas').getContext('2d').getImageData(px, py, 1, 1).data),
+    [x, y],
+  );
+
+check('seen 173 stays frozen and visible', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await page.evaluate(() => {
+    window.__debug.setAim(0);
+    window.__debug.place173(0, 168, 72);
+  });
+  await sleep(600);
+  const s = await state(page);
+  assert.deepEqual([s.scp173[0].x, s.scp173[0].y], [168, 72]);
+  assert.equal(s.scp173[0].frozen, true);
+  assert.equal(s.scp173[0].visible, true);
+});
+
+check('unseen 173 chases at ~112px/s', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await page.evaluate(() => {
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, 168, 72);
+  });
+  const t0 = Date.now();
+  await sleep(400);
+  const s = await state(page);
+  const elapsed = (Date.now() - t0) / 1000;
+  const closed = 96 - dist(s.scp173[0], s.player);
+  assert.ok(Math.abs(closed - 112 * elapsed) <= 10, `closed ${closed} in ${elapsed}s`);
+  assert.equal(s.scp173[0].frozen, false);
+});
+
+check('173 outside the cone or beyond range is hidden', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await page.evaluate(() => {
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, 168, 72);
+  });
+  await sleep(60);
+  assert.equal((await state(page)).scp173[0].visible, false, 'behind the player');
+  await page.evaluate(() => {
+    window.__debug.setAim(0);
+    window.__debug.place173(0, 240, 72);
+  });
+  await sleep(30);
+  assert.equal((await state(page)).scp173[0].visible, false, 'beyond range 128px');
+});
+
+check('blink blackout: screen goes black and the observed 173 moves', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await page.evaluate(() => {
+    window.__debug.setAim(0);
+    window.__debug.place173(0, 168, 72);
+    window.__debug.setBlinkGauge(0.99);
+  });
+  await page.waitForFunction(() => window.__debug.state().blink.blinking, null, { timeout: 2000, polling: 'raf' });
+  const during = await state(page);
+  const sx = Math.round(during.player.x - during.camera.scrollX);
+  const sy = Math.round(during.player.y - during.camera.scrollY);
+  const px = await pixel(page, sx + 40, sy);
+  assert.deepEqual(px.slice(0, 3), [0, 0, 0], 'screen should be fully black while blinking');
+  assert.equal(during.scp173[0].visible, false);
+  await sleep(600);
+  const after = await state(page);
+  assert.equal(after.blink.blinking, false);
+  assert.ok(after.scp173[0].x < during.scp173[0].x - 20, `173 x ${during.scp173[0].x} -> ${after.scp173[0].x}`);
+  assert.equal(after.scp173[0].frozen, true, 'seen again after the blink');
+});
+
+check('touch kills within 200ms', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await page.evaluate(() => {
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, 78, 72);
+  });
+  await sleep(200);
+  assert.equal((await state(page)).mode, 'dead');
+});
+
+check('173 on the player position does not throw and kills', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await page.evaluate(() => {
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, 72, 72);
+  });
+  await sleep(200);
+  assert.equal((await state(page)).mode, 'dead');
+});
+
+check('restart x3 is clean', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  for (let i = 0; i < 3; i++) {
+    await page.evaluate(() => {
+      window.__debug.setAim(Math.PI);
+      window.__debug.place173(0, 76, 72);
+    });
+    await page.waitForFunction(() => window.__debug.state().mode === 'dead', null, { timeout: 2000 });
+    const gen = (await state(page)).generation;
+    await page.keyboard.press('Space');
+    await page.waitForFunction((g) => window.__debug.state().generation > g, gen, { timeout: 2000 });
+    await sleep(100);
+    const s = await state(page);
+    assert.equal(s.mode, 'playing');
+    assert.ok(Math.abs(s.player.x - 72) < 1 && Math.abs(s.player.y - 72) < 1, `player ${JSON.stringify(s.player)}`);
+    assert.ok(s.blink.gauge < 0.2, `gauge ${s.blink.gauge}`);
+    assert.equal(s.scp173.length, 1);
+  }
+  const a = await state(page);
+  await page.keyboard.down('d');
+  await sleep(1000);
+  await page.keyboard.up('d');
+  const b = await state(page);
+  const dx = b.player.x - a.player.x;
+  assert.ok(dx >= 36 && dx <= 60, `walked ${dx}px in 1s`);
+});
+
 (async () => {
   let failed = 0;
   await withPage(async (page, baseUrl, errors) => {
