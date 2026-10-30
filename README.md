@@ -31,8 +31,9 @@ GitHub Pages로도 그대로 열린다 (모든 경로가 상대 경로).
 ## 테스트
 
 ```bash
-npm test          # 순수 로직 단위 테스트 (node --test)
-npm run smoke     # Playwright 스모크 테스트 (브라우저에서 실제 씬 확인)
+npm test          # 순수 로직 단위 테스트 (node --test, 추가 설치 불필요)
+npm install && npx playwright install chromium   # 스모크 테스트를 처음 돌릴 때 한 번
+npm run smoke     # Playwright 스모크 테스트 (브라우저에서 실제 씬 확인, python3 필요)
 ```
 
 - `src/logic/` — DOM·Phaser를 모르는 순수 규칙(이동 충돌, 시야, 173, 스태미너, 깜빡임, 무전, 맵 파서). 단위 테스트 대상.

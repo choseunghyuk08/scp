@@ -140,6 +140,7 @@ export class PlayScene extends Phaser.Scene {
 
   die() {
     this.mode = 'dead';
+    this.scpGfx.setDepth(1002); // reveal the killer above the fog
     playBeep(90, 450, 0.08);
     this.showBanner('D-9341 사망 — Space로 재시작', '#ff4040');
   }
@@ -183,10 +184,10 @@ export class PlayScene extends Phaser.Scene {
       .lineStyle(1, 0xffffff, 1)
       .lineBetween(x, y, x + Math.cos(this.facing) * 9, y + Math.sin(this.facing) * 9);
 
-    // 173 is drawn only while the player is actually looking at it.
+    // 173 is drawn only while the player is actually looking at it, or once it has killed them.
     this.scpGfx.clear();
     this.scp.forEach((s, i) => {
-      if (this.observed[i]) this.scpGfx.fillStyle(COLORS.scp173, 1).fillRect(s.pos.x - 5, s.pos.y - 5, 10, 10);
+      if (this.observed[i] || this.mode === 'dead') this.scpGfx.fillStyle(COLORS.scp173, 1).fillRect(s.pos.x - 5, s.pos.y - 5, 10, 10);
     });
 
     this.fog.draw(visibilityPolygon(this.grid, this.player, this.facing), cam, isBlinking(this.blink));

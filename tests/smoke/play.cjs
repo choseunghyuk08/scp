@@ -17,7 +17,6 @@ check('boot', async (page, baseUrl) => {
   assert.deepEqual(info, { w: 480, h: 270, version: '3.90.0' });
 });
 
-const SHOTS = '/tmp/claude-0/-home-user-scp/955084d6-4a55-567d-b184-1152704b6ca3/scratchpad';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const state = (page) => page.evaluate(() => window.__debug.state());
 
@@ -106,7 +105,6 @@ check('fog: floor inside the cone is more than 2x brighter than behind the playe
     ([x, y]) => Array.from(document.querySelector('canvas').getContext('2d').getImageData(x, y, 1, 1).data),
     [sx - 40, sy],
   );
-  await page.screenshot({ path: `${SHOTS}/task9.png` });
   assert.ok(px[0] > behind[0] * 2, `inside r=${px[0]} behind r=${behind[0]}`);
 });
 
@@ -324,10 +322,58 @@ check('E at the exit with key escapes, opens the exit, and Space restarts cleanl
   assert.equal(again.exitSolid, true);
 });
 
+check('the killer is visible on the death screen', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  // y=40 keeps the player (and 173) well clear of the centred death banner, which is drawn at screen y~135.
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(72, 40);
+    window.__debug.setAim(Math.PI); // looking away, so the 173 is unobserved and free to close in
+    window.__debug.place173(0, 84, 40);
+  });
+  await page.waitForFunction(() => window.__debug.state().mode === 'dead', null, { timeout: 2000 });
+  await sleep(50);
+  const s = await state(page);
+  // 173 body is a 10px square centred ~78px; x=80 is outside the player circle (r=5 around 72).
+  const px = await pixel(page, Math.round(80 - s.camera.scrollX), Math.round(40 - s.camera.scrollY));
+  assert.ok(px[0] > 150, `173 pixel r=${px[0]}; it should be drawn above the fog when it kills`);
+});
+
+check('mouse aim: facing follows the pointer and stays finite off-canvas', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await page.evaluate(() => window.__debug.teleportPlayer(72, 72));
+  await sleep(100);
+  const s0 = await state(page);
+  const rect = await page.evaluate(() => {
+    const r = document.querySelector('canvas').getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  });
+  const gameToPage = (gx, gy) => [rect.left + (gx * rect.width) / 480, rect.top + (gy * rect.height) / 270];
+  const px = s0.player.x - s0.camera.scrollX;
+  const py = s0.player.y - s0.camera.scrollY;
+  const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  const cases = [
+    [px, py + 60, Math.PI / 2],
+    [px - 60, py, Math.PI],
+    [px + 40, py + 40, Math.PI / 4],
+    [px + 50, py - 50, -Math.PI / 4],
+  ];
+  for (const [gx, gy, expected] of cases) {
+    await page.mouse.move(...gameToPage(gx, gy));
+    await sleep(100);
+    const { facing } = await state(page);
+    assert.ok(Math.abs(wrap(facing - expected)) < 0.05, `pointer (${gx},${gy}) -> facing ${facing}, expected ${expected}`);
+  }
+  await page.mouse.move(-400, -400);
+  await sleep(100);
+  assert.ok(Number.isFinite((await state(page)).facing), 'facing must stay finite with the pointer off-canvas');
+});
+
 (async () => {
   let failed = 0;
+  const only = process.env.SMOKE_ONLY;
   await withPage(async (page, baseUrl, errors) => {
     for (const { name, fn } of checks) {
+      if (only && !name.includes(only)) continue; // SMOKE_ONLY=<substring> runs a subset
       try {
         await fn(page, baseUrl);
         console.log(`PASS ${name}`);
