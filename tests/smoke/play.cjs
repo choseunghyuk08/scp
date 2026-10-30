@@ -229,6 +229,101 @@ check('restart x3 is clean', async (page, baseUrl) => {
   assert.ok(dx >= 36 && dx <= 60, `walked ${dx}px in 1s`);
 });
 
+const radioLines = async () => (await import('../../src/logic/radio.js')).RADIO_LINES;
+const resetRadio = (page) => page.evaluate(() => window.__debug.resetRadio());
+// The OPEN_ROOM exit door 'X' is tile (17,7) -> center (280,120); (264,120) is 16px from it.
+const EXIT_SPOT = [264, 120];
+
+check('start line is shown at scene start', async (page, baseUrl) => {
+  const lines = await radioLines();
+  await openRoom(page, baseUrl);
+  await sleep(150);
+  assert.equal((await state(page)).radio, lines.start);
+});
+
+check('seen173 line appears the first time a 173 is observed', async (page, baseUrl) => {
+  const lines = await radioLines();
+  await openRoom(page, baseUrl);
+  await resetRadio(page);
+  await page.evaluate(() => {
+    window.__debug.setAim(0);
+    window.__debug.place173(0, 168, 72);
+  });
+  await sleep(150);
+  assert.equal((await state(page)).radio, lines.seen173);
+});
+
+check('blinkWarning line appears when the gauge passes 0.8', async (page, baseUrl) => {
+  const lines = await radioLines();
+  await openRoom(page, baseUrl);
+  await resetRadio(page);
+  await page.evaluate(() => {
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, 280, 130);
+    window.__debug.setBlinkGauge(0.85);
+  });
+  await sleep(100);
+  assert.equal((await state(page)).radio, lines.blinkWarning);
+});
+
+check('walking onto the key picks it up and shows the gotKey line', async (page, baseUrl) => {
+  const lines = await radioLines();
+  await openRoom(page, baseUrl);
+  await resetRadio(page);
+  assert.equal((await state(page)).hasKey, false);
+  await page.evaluate(() => window.__debug.teleportPlayer(30, 24)); // key 'K' is tile (1,1) -> center (24,24)
+  await sleep(100);
+  const s = await state(page);
+  assert.equal(s.hasKey, true);
+  assert.equal(s.radio, lines.gotKey);
+});
+
+check('E far from the exit does nothing', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await resetRadio(page);
+  await page.evaluate(() => window.__debug.teleportPlayer(72, 72));
+  await page.keyboard.press('e');
+  await sleep(100);
+  const s = await state(page);
+  assert.equal(s.radio, null);
+  assert.equal(s.mode, 'playing');
+});
+
+check('E at the exit without key shows the noKey line and stays playing', async (page, baseUrl) => {
+  const lines = await radioLines();
+  await openRoom(page, baseUrl);
+  await resetRadio(page);
+  await page.evaluate(([x, y]) => window.__debug.teleportPlayer(x, y), EXIT_SPOT);
+  await page.keyboard.press('e');
+  await sleep(100);
+  const s = await state(page);
+  assert.equal(s.radio, lines.noKey);
+  assert.equal(s.mode, 'playing');
+  assert.equal(s.exitSolid, true);
+});
+
+check('E at the exit with key escapes, opens the exit, and Space restarts cleanly', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  await resetRadio(page);
+  await page.evaluate(([x, y]) => {
+    window.__debug.giveKey();
+    window.__debug.teleportPlayer(x, y);
+  }, EXIT_SPOT);
+  assert.equal((await state(page)).exitSolid, true);
+  await page.keyboard.press('e');
+  await sleep(100);
+  const done = await state(page);
+  assert.equal(done.mode, 'escaped');
+  assert.equal(done.exitSolid, false);
+  await page.keyboard.press('Space');
+  await page.waitForFunction((g) => window.__debug.state().generation > g, done.generation, { timeout: 2000 });
+  await sleep(100);
+  const again = await state(page);
+  assert.equal(again.mode, 'playing');
+  assert.equal(again.hasKey, false);
+  assert.equal(again.exitSolid, true);
+});
+
 (async () => {
   let failed = 0;
   await withPage(async (page, baseUrl, errors) => {
