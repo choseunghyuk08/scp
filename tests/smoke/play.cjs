@@ -20,11 +20,26 @@ check('boot', async (page, baseUrl) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const state = (page) => page.evaluate(() => window.__debug.state());
 
-async function openRoom(page, baseUrl) {
+async function openRoom(page, baseUrl, extra = {}) {
   await page.goto(`${baseUrl}/index.html?debug=1`);
   await page.waitForFunction(() => window.__debug, null, { timeout: 5000 });
   const gen = await page.evaluate(() => window.__debug.state().generation);
-  await page.evaluate((rows) => window.__debug.loadRows(rows), OPEN_ROOM);
+  await page.evaluate(([rows, more]) => window.__debug.loadRows(rows, more), [OPEN_ROOM, extra]);
+  await page.waitForFunction((g) => window.__debug.state().generation > g, gen, { timeout: 5000 });
+}
+
+/** Fresh storage, then boot a run from ?seed=. */
+async function openRun(page, baseUrl, seed) {
+  await page.goto(`${baseUrl}/index.html?debug=1`);
+  await page.waitForFunction(() => window.__debug, null, { timeout: 5000 });
+  await page.evaluate(() => localStorage.clear());
+  await page.goto(`${baseUrl}/index.html?debug=1&seed=${seed}`);
+  await page.waitForFunction((s) => window.__debug && window.__debug.state().run?.seed === s, seed, { timeout: 5000 });
+}
+
+async function startRun(page, run) {
+  const gen = (await page.evaluate(() => window.__debug.state())).generation;
+  await page.evaluate((r) => window.__debug.startRun(r), run);
   await page.waitForFunction((g) => window.__debug.state().generation > g, gen, { timeout: 5000 });
 }
 
@@ -366,6 +381,83 @@ check('mouse aim: facing follows the pointer and stays finite off-canvas', async
   await page.mouse.move(-400, -400);
   await sleep(100);
   assert.ok(Number.isFinite((await state(page)).facing), 'facing must stay finite with the pointer off-canvas');
+});
+
+check('seeded boot loads the tutorial zone', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 1234);
+  const s = await state(page);
+  assert.deepEqual([s.run.seed, s.run.zone, s.run.attempt], [1234, 0, 0]);
+  assert.equal(s.map.cardKey, null);
+  assert.equal(s.scp173.length, 1);
+  assert.equal(s.zoneLabel, '구역 1/4');
+  assert.equal(s.activation, 'sighting');
+  assert.equal(s.zone.usedFallback, false);
+});
+
+check('the same seed gives the same zone', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 555);
+  const a = (await state(page)).map;
+  await openRun(page, baseUrl, 555);
+  const b = (await state(page)).map;
+  assert.deepEqual([b.hash, b.playerStart, b.exit], [a.hash, a.playerStart, a.exit]);
+  await openRun(page, baseUrl, 556);
+  assert.notEqual((await state(page)).map.hash, a.hash);
+});
+
+check('startRun on the key zone shows a card key and radius activation', async (page, baseUrl) => {
+  const { keyZone } = await import('../../src/logic/run.js');
+  await openRun(page, baseUrl, 777);
+  const z = keyZone(777);
+  await startRun(page, { seed: 777, zone: z, attempt: 0, hasKey: false, heard: [] });
+  const s = await state(page);
+  assert.equal(s.run.zone, z);
+  assert.ok(s.map.cardKey, 'the key zone must have a card key');
+  assert.equal(s.activation, 'radius');
+  assert.equal(s.zoneLabel, `구역 ${z + 1}/4`);
+  assert.equal(s.scp173.length >= 1, true);
+});
+
+check('sighting 173 sleeps until seen, then hunts', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, { activation: { kind: 'sighting' } });
+  await page.evaluate(() => {
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, 168, 72);
+  });
+  await sleep(600);
+  let s = await state(page);
+  assert.deepEqual([s.scp173[0].x, s.scp173[0].awake, s.scp173[0].frozen], [168, false, true], 'dormant before first sight');
+  await page.evaluate(() => window.__debug.setAim(0));
+  await sleep(150);
+  assert.equal((await state(page)).scp173[0].awake, true, 'seeing it wakes it');
+  await page.evaluate(() => window.__debug.setAim(Math.PI));
+  await sleep(300);
+  s = await state(page);
+  assert.ok(s.scp173[0].x < 158, `awake 173 should chase, x ${s.scp173[0].x}`);
+});
+
+check('radius 173 ignores a player beyond 14 tiles and chases inside', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, { activation: { kind: 'radius', tiles: 14 } });
+  await page.evaluate(() => {
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, 296, 24); // tile (18,1): 17 path tiles from the player's tile (4,4)
+  });
+  await sleep(500);
+  let s = await state(page);
+  assert.deepEqual([s.scp173[0].x, s.scp173[0].y], [296, 24], 'beyond 14 tiles it waits');
+  await page.evaluate(() => window.__debug.place173(0, 200, 72)); // tile (12,4): 8 path tiles
+  await sleep(300);
+  s = await state(page);
+  assert.ok(s.scp173[0].x < 190, `inside 14 tiles it chases, x ${s.scp173[0].x}`);
+});
+
+check('legacy rows mode still has no run and the v0.1 exit rules', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  const s = await state(page);
+  assert.equal(s.run, null);
+  assert.equal(s.activation, 'always');
+  assert.equal(s.zoneLabel, null);
+  assert.equal(s.zone, null);
+  assert.equal(s.exitSolid, true);
 });
 
 (async () => {

@@ -1,16 +1,18 @@
-import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST } from '../config.js';
+import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT } from '../config.js';
 import { playBeep } from '../audio/beep.js';
-import { TEST_MAP_ROWS } from '../data/testmap.js';
 import { createBlink, isBlinking, stepBlink } from '../logic/blink.js';
 import { tileCenter } from '../logic/grid.js';
 import { parseMap } from '../logic/map.js';
+import { buildZone } from '../logic/mapgen.js';
 import { moveWithCollision } from '../logic/movement.js';
 import { createRadio } from '../logic/radio.js';
+import { activationFor, zoneSpec } from '../logic/run.js';
 import { create173, isLethal, step173 } from '../logic/scp173.js';
 import { createStamina, canRun, stepStamina } from '../logic/stamina.js';
 import { clampDt } from '../logic/time.js';
 import { canSee, visibilityPolygon } from '../logic/vision.js';
 import { FogOverlay } from '../render/fog.js';
+import { bootRun, getStorage } from '../save.js';
 import { installDebug } from '../debug.js';
 
 const COLORS = {
@@ -23,15 +25,34 @@ const COLORS = {
 };
 const FONT = '"Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif';
 let generationCounter = 0;
+const randomSeed = () => Math.floor(Math.random() * 2 ** 32);
 
 export class PlayScene extends Phaser.Scene {
   constructor() {
     super('Play');
   }
 
+  /**
+   * data.rows (+ data.activation): legacy fixed map, no run and no saving (v0.1 smoke rooms).
+   * data.run: zone mode for that run. Neither: boot a run from ?seed= or the saved checkpoint.
+   */
   create(data) {
     this.generation = ++generationCounter;
-    this.map = parseMap(data?.rows ?? TEST_MAP_ROWS);
+    this.storage = getStorage();
+    if (data?.rows) {
+      this.run = null;
+      this.spec = null;
+      this.zoneInfo = null;
+      this.map = parseMap(data.rows);
+      this.activation = data.activation ?? { kind: 'always' };
+    } else {
+      this.run = data?.run ?? bootRun({ search: location.search, storage: this.storage, randomSeed });
+      this.spec = zoneSpec(this.run.seed, this.run.zone);
+      const { map, info } = buildZone(this.run.seed, this.spec, this.run.attempt);
+      this.map = map;
+      this.zoneInfo = info;
+      this.activation = activationFor(this.spec);
+    }
     this.grid = this.map.grid.map((row) => [...row]);
     this.player = { ...this.map.playerStart };
     this.facing = 0;
@@ -41,16 +62,16 @@ export class PlayScene extends Phaser.Scene {
     this.blink = createBlink();
     this.scp = this.map.spawns173.map(create173);
     this.observed = this.scp.map(() => false);
-    this.hasKey = false;
-    this.radio = createRadio();
+    this.hasKey = this.run ? this.run.hasKey : false;
+    this.radio = createRadio(this.run ? this.run.heard : []);
     this.shownLine = null;
     this.mode = 'playing';
 
     this.drawMap();
     this.keyGfx = this.add.graphics().setDepth(4);
-    this.keyGfx
-      .fillStyle(COLORS.key, 1)
-      .fillRect(this.map.cardKey.x - 3, this.map.cardKey.y - 3, 6, 6);
+    if (this.map.cardKey && !this.hasKey) {
+      this.keyGfx.fillStyle(COLORS.key, 1).fillRect(this.map.cardKey.x - 3, this.map.cardKey.y - 3, 6, 6);
+    }
     this.scpGfx = this.add.graphics().setDepth(5);
     this.playerGfx = this.add.graphics().setDepth(1001); // above the fog so the player is always visible
     this.fog = new FogOverlay(this);
@@ -101,13 +122,14 @@ export class PlayScene extends Phaser.Scene {
     const blinking = isBlinking(this.blink);
     this.observed = this.scp.map((s) => !blinking && canSee(this.grid, this.player, this.facing, s.pos));
     this.scp = this.scp.map((s, i) =>
-      step173(s, { dt, grid: this.grid, player: this.player, observed: this.observed[i] }),
+      step173(s, { dt, grid: this.grid, player: this.player, observed: this.observed[i], activation: this.activation }),
     );
 
     const now = this.nowMs();
     if (this.observed.some(Boolean)) this.radio.fire('seen173', now);
     if (this.blink.gauge >= 0.8) this.radio.fire('blinkWarning', now);
-    if (!this.hasKey && Math.hypot(this.player.x - this.map.cardKey.x, this.player.y - this.map.cardKey.y) <= KEY_PICKUP_DIST) {
+    const key = this.map.cardKey;
+    if (key && !this.hasKey && Math.hypot(this.player.x - key.x, this.player.y - key.y) <= KEY_PICKUP_DIST) {
       this.pickUpKey();
     }
     if (this.scp.some((s) => isLethal(s, this.player))) this.die();
@@ -200,6 +222,13 @@ export class PlayScene extends Phaser.Scene {
     this.hud = this.add.graphics().setScrollFactor(0).setDepth(2000);
     label(8, VIEW_H - 25, '스태미너');
     label(84, VIEW_H - 25, '눈');
+    this.zoneLabel = this.run ? `구역 ${this.run.zone + 1}/${ZONE_COUNT}` : null;
+    if (this.zoneLabel) {
+      this.add
+        .text(8, 8, this.zoneLabel, { fontFamily: FONT, fontSize: '10px', color: '#c0c0d0' })
+        .setScrollFactor(0)
+        .setDepth(2001);
+    }
     this.keyText = this.add
       .text(VIEW_W - 8, 8, '[카드키]', { fontFamily: FONT, fontSize: '10px', color: '#f0d040' })
       .setOrigin(1, 0)
