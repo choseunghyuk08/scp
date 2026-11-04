@@ -574,7 +574,7 @@ check('escaping starts a fresh run and clears the old checkpoint', async (page, 
 
 check('a 173 touching in the gate frame kills instead of advancing', async (page, baseUrl) => {
   await openRun(page, baseUrl, 5555);
-  await startRun(page, { seed: 5555, zone: 1, attempt: 0, hasKey: false, heard: [] });
+  await startRun(page, { seed: 5555, zone: 2, attempt: 0, hasKey: false, heard: [] }); // zone 1 holds the key (locked gate)
   const gate = tileMid((await state(page)).map.exit);
   await page.evaluate(({ x, y }) => {
     window.__debug.setAim(Math.PI);
@@ -583,7 +583,7 @@ check('a 173 touching in the gate frame kills instead of advancing', async (page
   }, gate);
   await sleep(800);
   const s = await state(page);
-  assert.deepEqual([s.mode, s.run.zone], ['dead', 1]);
+  assert.deepEqual([s.mode, s.run.zone], ['dead', 2]);
 });
 
 check('Space and E during the fade do nothing', async (page, baseUrl) => {
@@ -691,6 +691,66 @@ check('M toggles the debug view with the seed, zone, and attempt text', async (p
   await sleep(100);
   s = await state(page);
   assert.equal(s.debugView, false);
+});
+
+// Park every 173 inside the border wall corner: no path, so it can neither chase nor block the test.
+const park173s = (page) =>
+  page.evaluate(() => window.__debug.state().scp173.forEach((_, i) => window.__debug.place173(i, 8, 8)));
+
+check('holding R (key repeat) does not start a new run', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 4242);
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await waitZone(page, 1);
+  const gen = (await state(page)).generation;
+  await page.keyboard.down('r');
+  await sleep(60);
+  await page.keyboard.down('r'); // auto-repeat
+  await sleep(60);
+  await page.keyboard.down('r'); // auto-repeat
+  await page.keyboard.up('r');
+  await sleep(300);
+  const s = await state(page);
+  assert.deepEqual([s.run.seed, s.run.zone, s.generation], [4242, 1, gen]);
+});
+
+check('the key zone gate stays locked until the card key is picked up', async (page, baseUrl) => {
+  const { keyZone } = await import('../../src/logic/run.js');
+  const seed = 777;
+  const k = keyZone(seed);
+  await openRun(page, baseUrl, seed);
+  await startRun(page, { seed, zone: k, attempt: 0, hasKey: false, heard: [] });
+  await park173s(page);
+  let s = await state(page);
+  assert.equal(s.exitSolid, true, 'locked before the key');
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid(s.map.exit));
+  await sleep(800);
+  s = await state(page);
+  assert.deepEqual([s.run.zone, s.mode], [k, 'playing'], 'a locked gate does not move you on');
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), s.map.cardKey);
+  await page.waitForFunction(() => window.__debug.state().hasKey, null, { timeout: 2000 });
+  assert.equal((await state(page)).exitSolid, false, 'picking up the key opens the gate');
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid(s.map.exit));
+  await waitZone(page, k + 1);
+});
+
+check('reloading a ?seed= link keeps the checkpoint (the seed is consumed from the URL)', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 31337);
+  assert.ok(!new URL(page.url()).searchParams.has('seed'), `url still has the seed: ${page.url()}`);
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await waitZone(page, 1);
+  await page.reload();
+  await page.waitForFunction(() => window.__debug?.state().run, null, { timeout: 5000 });
+  const s = await state(page);
+  assert.deepEqual([s.run.seed, s.run.zone], [31337, 1]);
+});
+
+check('a reload during the gate fade resumes in the next zone', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 2468);
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await page.waitForFunction(() => window.__debug.state().mode === 'transition', null, { timeout: 2000 });
+  await page.goto(`${baseUrl}/index.html?debug=1`);
+  await page.waitForFunction(() => window.__debug?.state().run, null, { timeout: 5000 });
+  assert.deepEqual([(await state(page)).run.seed, (await state(page)).run.zone], [2468, 1]);
 });
 
 (async () => {

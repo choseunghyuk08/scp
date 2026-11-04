@@ -150,3 +150,27 @@ test('info.tries is between 1 and maxAttempts when the fallback is not used', ()
     assert.ok(info.pathLength >= zoneSpec(seed, 2).minPath);
   }
 });
+
+// 80x5 corridor: a wall at column 10 (open on row 3) hides everything right of it from the start.
+const LONG = [
+  '#'.repeat(80),
+  '#@' + '.'.repeat(8) + '#' + '.'.repeat(68) + '#',
+  '#' + '.'.repeat(9) + '#' + '.'.repeat(68) + 'X',
+  '#' + '.'.repeat(78) + '#',
+  '#'.repeat(80),
+];
+const TWO = { index: 2, isTutorial: false, isFinal: false, hasKey: true, roomCount: 4, minPath: 0, scp173Count: 2 };
+
+test('two 173s must be far enough apart that one player position cannot wake both (2 x AGGRO_TILES + 1 path tiles)', () => {
+  const apart = edit(LONG, [{ x: 25, y: 3, ch: 'K' }, { x: 35, y: 1, ch: 'S' }, { x: 70, y: 1, ch: 'S' }]);
+  assert.deepEqual(problems(apart, TWO), []);
+  const close = edit(LONG, [{ x: 25, y: 3, ch: 'K' }, { x: 35, y: 1, ch: 'S' }, { x: 45, y: 1, ch: 'S' }]);
+  assert.ok(problems(close, TWO).some((p) => /can hunt at once/.test(p)));
+});
+
+test('generated zones with two 173s keep them at least 29 path tiles apart', () => {
+  for (let seed = 0; seed < 30; seed++) {
+    const spec = zoneSpec(seed, 3);
+    assert.deepEqual(validateZoneMap(buildZone(seed, spec, 0).map, spec), [], `seed ${seed}`);
+  }
+});

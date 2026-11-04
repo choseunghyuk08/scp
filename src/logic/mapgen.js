@@ -1,4 +1,4 @@
-import { MAX_GEN_ATTEMPTS, SPAWN_KEY_MIN_TILES, SPAWN_MIN_PATH, TILE, ZONE_COLS, ZONE_ROWS } from '../config.js';
+import { AGGRO_TILES, MAX_GEN_ATTEMPTS, SPAWN_KEY_MIN_TILES, SPAWN_MIN_PATH, TILE, ZONE_COLS, ZONE_ROWS } from '../config.js';
 import { TEST_MAP_ROWS } from '../data/testmap.js';
 import { tileCenter, tileOf } from './grid.js';
 import { parseMap } from './map.js';
@@ -9,7 +9,8 @@ import { layoutZone } from './zonelayout.js';
 // ZoneBuild = { map: ParsedMap, info: { zoneIndex, tries, usedFallback, rooms, pathLength } }.
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-const SPAWN_SPACING = 6; // tiles between two 173s in the same zone
+// Two 173s this many path tiles apart can never both be within AGGRO_TILES of the player, so they cannot pincer.
+const SPAWN_GAP = 2 * AGGRO_TILES + 1;
 const TUTORIAL_SPAWN_RADIUS = 4; // tiles from the middle room's centre
 
 const tileOfPoint = (p) => ({ tx: tileOf(p.x), ty: tileOf(p.y) });
@@ -77,6 +78,15 @@ function inspect(map, spec) {
     else length = toExit;
   }
   if (length !== null && length < spec.minPath) problems.push(`route ${length} shorter than minPath ${spec.minPath}`);
+
+  const spawnTiles = map.spawns173.map(tileOfPoint);
+  for (let i = 0; i < spawnTiles.length - 1; i++) {
+    const field = distanceField(open, spawnTiles[i].tx, spawnTiles[i].ty);
+    for (let j = i + 1; j < spawnTiles.length; j++) {
+      const d = at(field, spawnTiles[j]);
+      if (d >= 0 && d < SPAWN_GAP) problems.push(`spawns ${i} and ${j} are ${d} path tiles apart and can hunt at once`);
+    }
+  }
 
   map.spawns173.forEach((s, i) => {
     const d = at(fromStart, tileOfPoint(s));
@@ -187,9 +197,13 @@ function tryBuild(rng, spec) {
     }
   }
   const spawns = [];
+  const spawnFields = [];
   for (const t of shuffle(rng, candidates)) {
     if (spawns.length === spec.scp173Count) break;
-    if (spawns.every((s) => Math.hypot(s.tx - t.tx, s.ty - t.ty) >= SPAWN_SPACING)) spawns.push(t);
+    if (spawnFields.every((field) => field[idx(t)] >= SPAWN_GAP)) {
+      spawns.push(t);
+      spawnFields.push(distanceField(open, t.tx, t.ty));
+    }
   }
   if (spawns.length < spec.scp173Count) return null;
 

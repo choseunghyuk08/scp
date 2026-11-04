@@ -29,6 +29,14 @@ const FONT = '"Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif';
 let generationCounter = 0;
 const randomSeed = () => Math.floor(Math.random() * 2 ** 32);
 
+/** ?seed= starts a run once; dropping it from the address bar makes a refresh resume that run's checkpoint. */
+function consumeSeedParam() {
+  const url = new URL(location.href);
+  if (!url.searchParams.has('seed')) return;
+  url.searchParams.delete('seed');
+  history.replaceState(history.state, '', url);
+}
+
 export class PlayScene extends Phaser.Scene {
   constructor() {
     super('Play');
@@ -49,6 +57,7 @@ export class PlayScene extends Phaser.Scene {
       this.activation = data.activation ?? { kind: 'always' };
     } else {
       this.run = data?.run ?? bootRun({ search: location.search, storage: this.storage, randomSeed });
+      if (!data?.run) consumeSeedParam();
       this.spec = zoneSpec(this.run.seed, this.run.zone);
       const { map, info } = buildZone(this.run.seed, this.spec, this.run.attempt);
       this.map = map;
@@ -57,9 +66,6 @@ export class PlayScene extends Phaser.Scene {
       saveRun(this.run, this.storage); // checkpoint: entering a zone
     }
     this.grid = this.map.grid.map((row) => [...row]);
-    // Every zone but the last ends in an open gate to the next zone; the last keeps the locked card-key exit.
-    this.gateOpen = Boolean(this.spec && !this.spec.isFinal);
-    if (this.gateOpen) this.grid[this.map.exit.ty][this.map.exit.tx] = false;
     this.player = { ...this.map.playerStart };
     this.facing = 0;
     this.pointerMoved = false;
@@ -69,6 +75,10 @@ export class PlayScene extends Phaser.Scene {
     this.scp = this.map.spawns173.map(create173);
     this.observed = this.scp.map(() => false);
     this.hasKey = this.run ? this.run.hasKey : false;
+    // Every zone but the last ends in a gate to the next zone. The card-key zone's gate stays locked until the key is
+    // picked up, so nobody reaches the final locked exit without it. The last zone keeps the card-key exit.
+    this.gateOpen = Boolean(this.spec && !this.spec.isFinal && (!this.spec.hasKey || this.hasKey));
+    if (this.gateOpen) this.grid[this.map.exit.ty][this.map.exit.tx] = false;
     this.radio = createRadio(this.run ? this.run.heard : []);
     this.shownLine = null;
     this.mode = 'playing';
@@ -96,7 +106,9 @@ export class PlayScene extends Phaser.Scene {
       else if (this.mode === 'escaped') this.startNewRun();
     });
     this.input.keyboard.on('keydown-E', () => this.tryInteract());
-    this.input.keyboard.on('keydown-R', () => this.onNewRunKey());
+    this.input.keyboard.on('keydown-R', (event) => {
+      if (!event.repeat) this.onNewRunKey(); // a held key auto-repeats; only a real second press confirms
+    });
     if (debugEnabled()) this.input.keyboard.on('keydown-M', () => this.toggleDebugView());
     // Phaser releases held keys itself when the window loses focus; the smoke check "blur releases keys" guards that.
 
@@ -155,12 +167,10 @@ export class PlayScene extends Phaser.Scene {
 
   beginTransition() {
     this.mode = 'transition';
+    const run = advanceZone({ ...this.run, hasKey: this.hasKey, heard: this.radio.heardEvents() });
+    saveRun(run, this.storage); // saved now, so a reload during the fade already resumes in the next zone
     this.cameras.main.fadeOut(TRANSITION_MS, 0, 0, 0);
-    this.time.delayedCall(TRANSITION_MS, () => {
-      const run = advanceZone({ ...this.run, hasKey: this.hasKey, heard: this.radio.heardEvents() });
-      saveRun(run, this.storage);
-      this.scene.restart({ run, fadeIn: true });
-    });
+    this.time.delayedCall(TRANSITION_MS, () => this.scene.restart({ run, fadeIn: true }));
   }
 
   nowMs() {
@@ -213,8 +223,16 @@ export class PlayScene extends Phaser.Scene {
   pickUpKey() {
     this.hasKey = true;
     this.keyGfx.clear();
+    if (this.spec && !this.spec.isFinal && !this.gateOpen) this.openGate();
     this.radio.fire('gotKey', this.nowMs());
     playBeep(1320, 150);
+  }
+
+  openGate() {
+    const { tx, ty } = this.map.exit;
+    this.gateOpen = true;
+    this.grid[ty][tx] = false;
+    this.exitGfx.clear().fillStyle(COLORS.gate, 1).fillRect(tx * TILE, ty * TILE, TILE, TILE);
   }
 
   tryInteract() {
@@ -225,6 +243,7 @@ export class PlayScene extends Phaser.Scene {
       this.radio.fire('noKey', this.nowMs());
       return;
     }
+    if (this.spec && !this.spec.isFinal) return; // zone gates are walked through, never opened with E
     const { tx, ty } = this.map.exit;
     this.grid[ty][tx] = false;
     this.exitGfx.clear().fillStyle(COLORS.floor, 1).fillRect(tx * TILE, ty * TILE, TILE, TILE);
