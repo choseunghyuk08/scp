@@ -460,6 +460,146 @@ check('legacy rows mode still has no run and the v0.1 exit rules', async (page, 
   assert.equal(s.exitSolid, true);
 });
 
+const tileMid = (t) => ({ x: t.tx * 16 + 8, y: t.ty * 16 + 8 });
+const savedRun = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('gaze.run.v1') ?? 'null'));
+const waitZone = (page, zone, timeout = 3000) =>
+  page.waitForFunction((z) => { const s = window.__debug.state(); return s.run?.zone === z && s.mode === 'playing'; }, zone, { timeout });
+const waitNextScene = async (page, gen) => page.waitForFunction((g) => window.__debug.state().generation > g, gen, { timeout: 3000 });
+// Kill the player with a 173 placed on top of them while looking away (radius zones: path 0 <= 14 tiles).
+async function dieHere(page) {
+  await page.evaluate(() => {
+    const { x, y } = window.__debug.state().player;
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, x, y);
+  });
+  await page.waitForFunction(() => window.__debug.state().mode === 'dead', null, { timeout: 2000 });
+}
+async function respawn(page) {
+  const gen = (await state(page)).generation;
+  await page.keyboard.press('Space');
+  await waitNextScene(page, gen);
+  await sleep(100);
+}
+
+check('the gate moves exactly one zone, saves it, and ignores re-entry during the fade', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 1234);
+  const s0 = await state(page);
+  const gate = tileMid(s0.map.exit);
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), gate);
+  await sleep(100);
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), gate);
+  await waitZone(page, 1);
+  await sleep(700);
+  const s1 = await state(page);
+  assert.deepEqual([s1.run.zone, s1.run.attempt, s1.run.seed], [1, 0, 1234]);
+  assert.equal((await savedRun(page)).zone, 1);
+});
+
+check('death restarts the same zone with attempt+1, a different layout, at the entrance', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 2222);
+  await startRun(page, { seed: 2222, zone: 1, attempt: 0, hasKey: false, heard: [] });
+  const before = await state(page);
+  await dieHere(page);
+  await respawn(page);
+  const after = await state(page);
+  assert.deepEqual([after.run.zone, after.run.attempt, after.mode], [1, 1, 'playing']);
+  assert.notEqual(after.map.hash, before.map.hash);
+  assert.ok(Math.hypot(after.player.x - after.map.playerStart.x, after.player.y - after.map.playerStart.y) < 1);
+  assert.equal((await savedRun(page)).attempt, 1);
+});
+
+check('the card key survives a zone transition but is lost if you die before leaving its zone', async (page, baseUrl) => {
+  const { keyZone } = await import('../../src/logic/run.js');
+  const seed = 9001;
+  const k = keyZone(seed);
+  await openRun(page, baseUrl, seed);
+  await startRun(page, { seed, zone: k, attempt: 0, hasKey: false, heard: [] });
+  const grabKey = async () => {
+    const s = await state(page);
+    await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), s.map.cardKey);
+    await page.waitForFunction(() => window.__debug.state().hasKey, null, { timeout: 2000 });
+  };
+  await grabKey();
+  await dieHere(page);
+  await respawn(page);
+  assert.equal((await state(page)).hasKey, false, 'dying in the key zone loses the key');
+  await grabKey();
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await waitZone(page, k + 1);
+  let s = await state(page);
+  assert.deepEqual([s.hasKey, s.run.hasKey], [true, true], 'carried into the next zone');
+  await dieHere(page);
+  await respawn(page);
+  s = await state(page);
+  assert.deepEqual([s.run.zone, s.hasKey], [k + 1, true], 'kept after dying in a later zone');
+});
+
+check('heard radio lines are not repeated after dying', async (page, baseUrl) => {
+  const lines = await radioLines();
+  await openRun(page, baseUrl, 3141);
+  await startRun(page, { seed: 3141, zone: 1, attempt: 0, hasKey: false, heard: [] });
+  await sleep(150);
+  assert.equal((await state(page)).radio, lines.start);
+  await dieHere(page);
+  await respawn(page);
+  const s = await state(page);
+  assert.ok(s.run.heard.includes('start'), `heard ${s.run.heard}`);
+  assert.equal(s.radio, null);
+});
+
+check('reloading without ?seed resumes the checkpoint', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 3333);
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await waitZone(page, 1);
+  const before = await state(page);
+  await page.goto(`${baseUrl}/index.html?debug=1`);
+  await page.waitForFunction(() => window.__debug?.state().run, null, { timeout: 5000 });
+  const after = await state(page);
+  assert.deepEqual([after.run.seed, after.run.zone, after.run.attempt], [3333, 1, 0]);
+  assert.equal(after.map.hash, before.map.hash);
+});
+
+check('escaping starts a fresh run and clears the old checkpoint', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 4444);
+  await startRun(page, { seed: 4444, zone: 3, attempt: 0, hasKey: true, heard: [] });
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await page.keyboard.press('e');
+  await page.waitForFunction(() => window.__debug.state().mode === 'escaped', null, { timeout: 2000 });
+  await respawn(page);
+  const s = await state(page);
+  assert.deepEqual([s.run.zone, s.run.attempt, s.mode], [0, 0, 'playing']);
+  assert.notEqual(s.run.seed, 4444);
+  assert.equal((await savedRun(page)).seed, s.run.seed);
+});
+
+check('a 173 touching in the gate frame kills instead of advancing', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 5555);
+  await startRun(page, { seed: 5555, zone: 1, attempt: 0, hasKey: false, heard: [] });
+  const gate = tileMid((await state(page)).map.exit);
+  await page.evaluate(({ x, y }) => {
+    window.__debug.setAim(Math.PI);
+    window.__debug.teleportPlayer(x, y);
+    window.__debug.place173(0, x, y);
+  }, gate);
+  await sleep(800);
+  const s = await state(page);
+  assert.deepEqual([s.mode, s.run.zone], ['dead', 1]);
+});
+
+check('Space and E during the fade do nothing', async (page, baseUrl) => {
+  const lines = await radioLines();
+  await openRun(page, baseUrl, 6666);
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await page.waitForFunction(() => window.__debug.state().mode === 'transition', null, { timeout: 2000 });
+  await page.keyboard.press('Space');
+  await page.keyboard.press('e');
+  await waitZone(page, 1);
+  await sleep(600);
+  const s = await state(page);
+  assert.deepEqual([s.run.zone, s.run.attempt], [1, 0]);
+  assert.notEqual(s.radio, lines.noKey);
+});
+
 (async () => {
   let failed = 0;
   const only = process.env.SMOKE_ONLY;

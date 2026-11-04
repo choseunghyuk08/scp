@@ -1,24 +1,25 @@
-import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT } from '../config.js';
+import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS } from '../config.js';
 import { playBeep } from '../audio/beep.js';
 import { createBlink, isBlinking, stepBlink } from '../logic/blink.js';
-import { tileCenter } from '../logic/grid.js';
+import { tileCenter, tileOf } from '../logic/grid.js';
 import { parseMap } from '../logic/map.js';
 import { buildZone } from '../logic/mapgen.js';
 import { moveWithCollision } from '../logic/movement.js';
 import { createRadio } from '../logic/radio.js';
-import { activationFor, zoneSpec } from '../logic/run.js';
+import { activationFor, advanceZone, createRun, registerDeath, zoneSpec } from '../logic/run.js';
 import { create173, isLethal, step173 } from '../logic/scp173.js';
 import { createStamina, canRun, stepStamina } from '../logic/stamina.js';
 import { clampDt } from '../logic/time.js';
 import { canSee, visibilityPolygon } from '../logic/vision.js';
 import { FogOverlay } from '../render/fog.js';
-import { bootRun, getStorage } from '../save.js';
+import { bootRun, clearRun, getStorage, saveRun } from '../save.js';
 import { installDebug } from '../debug.js';
 
 const COLORS = {
   floor: 0x3a3a46,
   wall: 0x6a6a7c,
   exit: 0x8a2a2a,
+  gate: 0x2a8a5a,
   player: 0xe8e8e8,
   scp173: 0xd8d0a8,
   key: 0xf0d040,
@@ -52,8 +53,12 @@ export class PlayScene extends Phaser.Scene {
       this.map = map;
       this.zoneInfo = info;
       this.activation = activationFor(this.spec);
+      saveRun(this.run, this.storage); // checkpoint: entering a zone
     }
     this.grid = this.map.grid.map((row) => [...row]);
+    // Every zone but the last ends in an open gate to the next zone; the last keeps the locked card-key exit.
+    this.gateOpen = Boolean(this.spec && !this.spec.isFinal);
+    if (this.gateOpen) this.grid[this.map.exit.ty][this.map.exit.tx] = false;
     this.player = { ...this.map.playerStart };
     this.facing = 0;
     this.pointerMoved = false;
@@ -84,14 +89,48 @@ export class PlayScene extends Phaser.Scene {
     // Event-driven (not Key.JustDown) so a tap shorter than one frame still registers. Scene-owned, so they
     // are removed on shutdown and restarts never stack listeners.
     this.input.keyboard.on('keydown-SPACE', () => {
-      if (this.mode === 'dead' || this.mode === 'escaped') this.scene.restart();
+      if (this.mode === 'dead') this.restartAfterDeath();
+      else if (this.mode === 'escaped') this.startNewRun();
     });
     this.input.keyboard.on('keydown-E', () => this.tryInteract());
     // Phaser releases held keys itself when the window loses focus; the smoke check "blur releases keys" guards that.
 
     this.radio.fire('start', this.nowMs());
     installDebug(this);
+    if (data?.fadeIn) this.cameras.main.fadeIn(TRANSITION_MS);
     this.render();
+  }
+
+  /** Same zone, next attempt (a fresh layout), keeping what was carried in when the zone was entered. */
+  restartAfterDeath() {
+    if (!this.run) {
+      this.scene.restart();
+      return;
+    }
+    const run = registerDeath(this.run, this.radio.heardEvents());
+    saveRun(run, this.storage);
+    this.scene.restart({ run });
+  }
+
+  startNewRun() {
+    if (!this.run) {
+      this.scene.restart();
+      return;
+    }
+    clearRun(this.storage);
+    const run = createRun(randomSeed());
+    saveRun(run, this.storage);
+    this.scene.restart({ run });
+  }
+
+  beginTransition() {
+    this.mode = 'transition';
+    this.cameras.main.fadeOut(TRANSITION_MS, 0, 0, 0);
+    this.time.delayedCall(TRANSITION_MS, () => {
+      const run = advanceZone({ ...this.run, hasKey: this.hasKey, heard: this.radio.heardEvents() });
+      saveRun(run, this.storage);
+      this.scene.restart({ run, fadeIn: true });
+    });
   }
 
   nowMs() {
@@ -133,6 +172,10 @@ export class PlayScene extends Phaser.Scene {
       this.pickUpKey();
     }
     if (this.scp.some((s) => isLethal(s, this.player))) this.die();
+    const { exit } = this.map;
+    if (this.mode === 'playing' && this.gateOpen && tileOf(this.player.x) === exit.tx && tileOf(this.player.y) === exit.ty) {
+      this.beginTransition();
+    }
 
     this.render();
   }
@@ -145,7 +188,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   tryInteract() {
-    if (this.mode !== 'playing') return;
+    if (this.mode !== 'playing' || this.gateOpen) return;
     const door = tileCenter(this.map.exit.tx, this.map.exit.ty);
     if (Math.hypot(door.x - this.player.x, door.y - this.player.y) > EXIT_INTERACT_DIST) return;
     if (!this.hasKey) {
@@ -278,6 +321,6 @@ export class PlayScene extends Phaser.Scene {
     }
     const { tx, ty } = this.map.exit;
     this.exitGfx = this.add.graphics().setDepth(1);
-    this.exitGfx.fillStyle(COLORS.exit, 1).fillRect(tx * TILE, ty * TILE, TILE, TILE);
+    this.exitGfx.fillStyle(this.gateOpen ? COLORS.gate : COLORS.exit, 1).fillRect(tx * TILE, ty * TILE, TILE, TILE);
   }
 }

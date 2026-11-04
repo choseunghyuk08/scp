@@ -25,3 +25,4 @@ export const ZONE_ROWS = 40;
 export const MAX_GEN_ATTEMPTS = 50;
 export const SPAWN_MIN_PATH = 15;
 export const SPAWN_KEY_MIN_TILES = 5;
+export const TRANSITION_MS = 400;
