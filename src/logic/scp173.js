@@ -2,20 +2,31 @@ import { SCP173 } from '../config.js';
 import { findPath } from './pathfinding.js';
 import { tileCenter, tileOf } from './grid.js';
 
+const ALWAYS = { kind: 'always' };
+
 export function create173(pos) {
-  return { pos: { x: pos.x, y: pos.y }, frozen: false };
+  return { pos: { x: pos.x, y: pos.y }, frozen: false, awake: false };
 }
 
-/** Frozen while observed; otherwise walks the BFS path toward the player at SCP173.speed. */
-export function step173(s, { dt, grid, player, observed }) {
-  if (observed) return { pos: { ...s.pos }, frozen: true };
+/**
+ * Frozen while observed; otherwise walks the BFS path toward the player at SCP173.speed.
+ * `activation` decides when it hunts:
+ *  - always:   as soon as it is unobserved (v0.1);
+ *  - sighting: dormant (frozen, harmless) until seen once, then it hunts for good;
+ *  - radius:   only while the player is within `tiles` path tiles.
+ */
+export function step173(s, { dt, grid, player, observed, activation = ALWAYS }) {
+  const awake = s.awake || (activation.kind === 'sighting' && observed);
+  if (observed) return { pos: { ...s.pos }, frozen: true, awake };
+  if (activation.kind === 'sighting' && !awake) return { pos: { ...s.pos }, frozen: true, awake };
 
   const path = findPath(
     grid,
     { tx: tileOf(s.pos.x), ty: tileOf(s.pos.y) },
     { tx: tileOf(player.x), ty: tileOf(player.y) },
   );
-  if (path === null) return { pos: { ...s.pos }, frozen: false };
+  if (path === null) return { pos: { ...s.pos }, frozen: false, awake };
+  if (activation.kind === 'radius' && path.length > activation.tiles) return { pos: { ...s.pos }, frozen: false, awake };
 
   // Tile centers up to (not including) the player's tile, then the player's exact position.
   const waypoints = [...path.slice(0, -1).map((t) => tileCenter(t.tx, t.ty)), player];
@@ -34,7 +45,7 @@ export function step173(s, { dt, grid, player, observed }) {
       budget = 0;
     }
   }
-  return { pos: { x, y }, frozen: false };
+  return { pos: { x, y }, frozen: false, awake };
 }
 
 export function isLethal(s, player) {

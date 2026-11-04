@@ -7,6 +7,7 @@ export const VISION = { halfAngle: (35 * Math.PI) / 180, range: 128, rayCount: 4
 export const STAMINA = { drainSeconds: 4, regenDelaySeconds: 3, regenSeconds: 4, resumeAt: 0.25 };
 export const BLINK = { fillSeconds: 6, closedSeconds: 0.4 };
 export const SCP173 = { speed: 112, touchDistance: 10 };
+export const AGGRO_TILES = 14;
 
 export const FOG_ALPHA = 0.88;
 export const MAX_DT = 0.05;
