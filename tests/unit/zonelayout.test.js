@@ -10,9 +10,17 @@ for (let seed = 0; seed < 200; seed++) for (const roomCount of [3, 4]) cases.pus
 const layouts = cases.map(({ seed, roomCount }) => ({ seed, roomCount, ...layoutZone(createRng(seed), P(roomCount)) }));
 const center = (r) => ({ tx: r.x + Math.floor(r.w / 2), ty: r.y + Math.floor(r.h / 2) });
 
-test('zone size constants are 60 x 36', () => {
-  assert.equal(ZONE_COLS, 60);
-  assert.equal(ZONE_ROWS, 36);
+test('zone size constants are 64 x 40', () => {
+  assert.equal(ZONE_COLS, 64);
+  assert.equal(ZONE_ROWS, 40);
+});
+
+test('rooms are joined as one chain (no room has more than two corridors)', () => {
+  for (const { rooms, edges, seed } of layouts) {
+    const degree = rooms.map((_, i) => edges.filter((e) => e.includes(i)).length);
+    assert.ok(degree.every((d) => d >= 1 && d <= 2), `seed ${seed} degrees ${degree}`);
+    assert.equal(degree.filter((d) => d === 1).length, 2, `seed ${seed} chain ends`);
+  }
 });
 
 test('same seed gives the same layout', () => {
