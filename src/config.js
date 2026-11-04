@@ -14,3 +14,8 @@ export const MAX_DT = 0.05;
 export const RADIO_LINE_MS = 4000;
 export const KEY_PICKUP_DIST = 10;
 export const EXIT_INTERACT_DIST = 24;
+
+// v0.2 run structure (spec §4, §10). ZONE_SCP173 is a plan assumption: the spec only fixes the tutorial's single 173.
+export const ZONE_COUNT = 4;
+export const ZONE_MIN_PATH = [90, 120, 120, 120];
+export const ZONE_SCP173 = [1, 1, 2, 2];
