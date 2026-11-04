@@ -381,7 +381,7 @@ export class PlayScene extends Phaser.Scene {
     this.exitGfx.clear().fillStyle(COLORS.floor, 1).fillRect(tx * TILE, ty * TILE, TILE, TILE);
     this.mode = 'escaped';
     playBeep(660, 300);
-    this.showBanner('탈출 성공 — v0.1 끝. Space로 다시', '#80ff80');
+    this.showBanner('탈출 성공 — v0.3 끝. Space로 새 판', '#80ff80');
   }
 
   die() {
