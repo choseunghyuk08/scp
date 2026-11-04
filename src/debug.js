@@ -1,6 +1,7 @@
 import { isBlinking } from './logic/blink.js';
 import { createRadio } from './logic/radio.js';
 import { create173 } from './logic/scp173.js';
+import { create096 } from './logic/scp096.js';
 
 /** Small string hash so smoke checks can compare two generated maps. */
 function mapHash(map) {
@@ -27,6 +28,14 @@ export function installDebug(scene) {
       camera: { scrollX: scene.cameras.main.scrollX, scrollY: scene.cameras.main.scrollY },
       blink: { gauge: scene.blink.gauge, blinking: isBlinking(scene.blink) },
       scp173: scene.scp.map((s, i) => ({ x: s.pos.x, y: s.pos.y, frozen: s.frozen, awake: s.awake, visible: scene.observed[i] })),
+      scp096: scene.s096.map((s, i) => ({
+        x: s.pos.x,
+        y: s.pos.y,
+        mode: s.mode,
+        facing: s.facing,
+        visible: scene.visible096[i],
+        breaking: s.breaking ? s.breaking.left : null,
+      })),
       hasKey: scene.hasKey,
       radio: scene.radio.current(scene.nowMs()),
       exitSolid: scene.grid[scene.map.exit.ty][scene.map.exit.tx],
@@ -40,6 +49,7 @@ export function installDebug(scene) {
         cardKey: scene.map.cardKey,
         exit: scene.map.exit,
         spawns173: scene.map.spawns173,
+        spawns096: scene.map.spawns096,
         hash: mapHash(scene.map),
       },
       rArmed: scene.rPress.isArmed(scene.nowMs()),
@@ -67,6 +77,13 @@ export function installDebug(scene) {
     },
     place173(i, x, y) {
       scene.scp[i] = create173({ x, y });
+    },
+    place096(i, x, y, facing) {
+      scene.s096[i] = create096({ x, y }, facing);
+      scene.visible096[i] = false;
+    },
+    rage096(i) {
+      scene.s096[i] = { ...scene.s096[i], mode: 'rage', breaking: null };
     },
     setBlinkGauge(v) {
       scene.blink = { ...scene.blink, gauge: v };

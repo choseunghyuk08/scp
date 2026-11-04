@@ -1,15 +1,17 @@
-import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS } from '../config.js';
+import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS, SCP096 } from '../config.js';
 import { playBeep } from '../audio/beep.js';
 import { createBlink, isBlinking, stepBlink } from '../logic/blink.js';
 import { createDoublePress } from '../logic/confirm.js';
-import { createDoors, cycleDoor, isBlocking, nearestDoor, occupies, openDoor, withDoors } from '../logic/doors.js';
+import { breakDoor, createDoors, cycleDoor, isBlocking, nearestDoor, occupies, openDoor, withDoors } from '../logic/doors.js';
 import { tileCenter, tileOf } from '../logic/grid.js';
 import { parseMap } from '../logic/map.js';
 import { buildZone } from '../logic/mapgen.js';
 import { moveWithCollision } from '../logic/movement.js';
+import { findPath } from '../logic/pathfinding.js';
 import { createRadio } from '../logic/radio.js';
 import { activationFor, advanceZone, createRun, registerDeath, zoneSpec } from '../logic/run.js';
 import { create173, isLethal, step173 } from '../logic/scp173.js';
+import { create096, faceSeen, isLethal096, step096 } from '../logic/scp096.js';
 import { createStamina, canRun, stepStamina } from '../logic/stamina.js';
 import { clampDt } from '../logic/time.js';
 import { canSee, visibilityPolygon } from '../logic/vision.js';
@@ -25,9 +27,14 @@ const COLORS = {
   gate: 0x2a8a5a,
   player: 0xe8e8e8,
   scp173: 0xd8d0a8,
+  scp096: 0xe0e0e8,
+  scp096Face: 0x9090a0,
+  scp096Rage: 0xe04040,
   key: 0xf0d040,
 };
 const SCP173_RADIUS = 5; // drawn as a 10x10 square
+const SCP096_RADIUS = 5; // body 10x12, but it blocks a doorway like a 173
+const RAGE_BEEP_S = 0.5;
 const FONT = '"Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif';
 let generationCounter = 0;
 const randomSeed = () => Math.floor(Math.random() * 2 ** 32);
@@ -80,6 +87,9 @@ export class PlayScene extends Phaser.Scene {
     this.blink = createBlink();
     this.scp = this.map.spawns173.map(create173);
     this.observed = this.scp.map(() => false);
+    this.s096 = this.map.spawns096.map((sp) => create096(sp.pos, sp.facing));
+    this.visible096 = this.s096.map(() => false);
+    this.rageBeepIn = 0;
     this.hasKey = this.run ? this.run.hasKey : false;
     // Every zone but the last ends in a gate to the next zone. The card-key zone's gate stays locked until the key is
     // picked up, so nobody reaches the final locked exit without it. The last zone keeps the card-key exit.
@@ -213,6 +223,7 @@ export class PlayScene extends Phaser.Scene {
       step173(s, { dt, grid: this.baseGrid, player: this.player, observed: this.observed[i], activation: this.activation }),
     );
     this.open173Doors();
+    this.step096s(dt, blinking);
 
     const now = this.nowMs();
     if (this.observed.some(Boolean)) this.radio.fire('seen173', now);
@@ -221,7 +232,9 @@ export class PlayScene extends Phaser.Scene {
     if (key && !this.hasKey && Math.hypot(this.player.x - key.x, this.player.y - key.y) <= KEY_PICKUP_DIST) {
       this.pickUpKey();
     }
-    if (this.scp.some((s) => isLethal(s, this.player))) this.die();
+    this.warnNear096(now);
+    // Deaths are checked before the gate, so a touch in the same frame as stepping into the gate kills.
+    if (this.scp.some((s) => isLethal(s, this.player)) || this.s096.some((s) => isLethal096(s, this.player))) this.die();
     const { exit } = this.map;
     if (this.mode === 'playing' && this.gateOpen && tileOf(this.player.x) === exit.tx && tileOf(this.player.y) === exit.ty) {
       this.beginTransition();
@@ -251,7 +264,68 @@ export class PlayScene extends Phaser.Scene {
     return [
       { pos: this.player, radius: PLAYER.radius },
       ...this.scp.map((s) => ({ pos: s.pos, radius: SCP173_RADIUS })),
+      ...this.s096.map((s) => ({ pos: s.pos, radius: SCP096_RADIUS })),
     ];
+  }
+
+  /**
+   * Each 096 rages once its face is seen (never through a closed door or mid-blink), paths on baseGrid, and reports
+   * the doors it broke or opened; those are applied here. The first rage frame shakes the camera; a low beep repeats
+   * while any 096 rages.
+   */
+  step096s(dt, blinking) {
+    const seen = this.s096.map(
+      (s) => !blinking && faceSeen(s, { grid: this.grid, player: this.player, playerFacing: this.facing }),
+    );
+    let doorsChanged = false;
+    let rageStarted = false;
+    this.s096 = this.s096.map((s, i) => {
+      const { s: next, events } = step096(s, { dt, navGrid: this.baseGrid, doors: this.doors, player: this.player, seen: seen[i] });
+      for (const e of events) {
+        this.doors = this.doors.map((d) => (d.id === e.doorId ? (e.kind === 'broken' ? breakDoor(d) : openDoor(d)) : d));
+        doorsChanged = true;
+        if (e.kind === 'broken') playBeep(140, 250, 0.08);
+      }
+      if (s.mode !== 'rage' && next.mode === 'rage') rageStarted = true;
+      return next;
+    });
+    if (doorsChanged) this.refreshGrid();
+    this.visible096 = this.s096.map((s) => !blinking && canSee(this.grid, this.player, this.facing, s.pos));
+
+    if (rageStarted) {
+      this.cameras.main.shake(300, 0.01);
+      this.rageBeepIn = 0;
+    }
+    if (this.s096.some((s) => s.mode === 'rage')) {
+      this.rageBeepIn -= dt;
+      if (this.rageBeepIn <= 0) {
+        playBeep(220, 120);
+        this.rageBeepIn = RAGE_BEEP_S;
+      }
+    }
+  }
+
+  /** The control room warns once per run, the first time any 096 is within warnTiles path tiles. */
+  warnNear096(now) {
+    if (this.s096.length === 0 || this.radio.heardEvents().includes('near096')) return;
+    const from = { tx: tileOf(this.player.x), ty: tileOf(this.player.y) };
+    const near = this.s096.some((s) => {
+      if (Math.hypot(s.pos.x - this.player.x, s.pos.y - this.player.y) > (SCP096.warnTiles + 1) * TILE) return false;
+      const path = findPath(this.baseGrid, from, { tx: tileOf(s.pos.x), ty: tileOf(s.pos.y) });
+      return path !== null && path.length <= SCP096.warnTiles;
+    });
+    if (near) this.radio.fire('near096', now);
+  }
+
+  /** Doors a 096 is breaking, as progress 0..1 for the door layer. */
+  breakingBars() {
+    return this.s096
+      .filter((s) => s.breaking)
+      .map((s) => {
+        const door = this.doors.find((d) => d.id === s.breaking.doorId);
+        const total = SCP096.breakSeconds[door?.state] ?? 1;
+        return { doorId: s.breaking.doorId, progress: 1 - s.breaking.left / total };
+      });
   }
 
   setDoorState(id, next) {
@@ -363,7 +437,19 @@ export class PlayScene extends Phaser.Scene {
         this.scpGfx.fillStyle(COLORS.scp173, 1).fillRect(s.pos.x - SCP173_RADIUS, s.pos.y - SCP173_RADIUS, 10, 10);
       }
     });
-    drawDoors(this.doorGfx, this.doors, []);
+    // 096 is drawn only while it is actually in sight (or on the death screen / debug view): a pale body with a
+    // triangle on the side its face points to, red while it rages.
+    this.s096.forEach((s, i) => {
+      if (!(this.visible096[i] || this.mode === 'dead' || this.debugView)) return;
+      const rage = s.mode === 'rage';
+      const { x: bx, y: by } = s.pos;
+      this.scpGfx.fillStyle(rage ? COLORS.scp096Rage : COLORS.scp096, 1).fillRect(bx - 5, by - 6, 10, 12);
+      const tip = { x: bx + Math.cos(s.facing) * 10, y: by + Math.sin(s.facing) * 10 };
+      const side = (a) => ({ x: bx + Math.cos(s.facing + a) * 6, y: by + Math.sin(s.facing + a) * 6 });
+      const [l, r] = [side(0.7), side(-0.7)];
+      this.scpGfx.fillStyle(rage ? COLORS.scp096Rage : COLORS.scp096Face, 1).fillTriangle(tip.x, tip.y, l.x, l.y, r.x, r.y);
+    });
+    drawDoors(this.doorGfx, this.doors, this.breakingBars());
 
     this.fog.draw(visibilityPolygon(this.grid, this.player, this.facing), cam, isBlinking(this.blink));
     this.renderHud();

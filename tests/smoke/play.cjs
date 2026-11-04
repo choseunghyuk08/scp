@@ -852,6 +852,180 @@ check('without the card key the same E closes the door instead', async (page, ba
   assert.deepEqual([s.mode, s.doors[0].state], ['playing', 'closed']);
 });
 
+// ---- v0.3 SCP-096 (DOOR_ROOM: 096 at (488,72) facing right; door centre (376,80); door tiles x 368..384) ----
+
+const s096 = async (page) => (await state(page)).scp096[0];
+const waitFor = (page, fn, arg, timeout = 3000) => page.waitForFunction(fn, arg, { timeout });
+const nowS = () => performance.now() / 1000;
+
+/** Rage the 096 at a closed or locked door with the player out of reach on the left; returns break timings. */
+async function rageAtDoor(page, doorStateName, playerX = 200) {
+  await page.evaluate(
+    ([st, x]) => {
+      window.__debug.teleportPlayer(x, 72);
+      window.__debug.setAim(Math.PI);
+      window.__debug.setDoor(0, st);
+      window.__debug.rage096(0);
+    },
+    [doorStateName, playerX],
+  );
+  await waitFor(page, () => window.__debug.state().scp096[0].breaking !== null);
+  const startLeft = (await s096(page)).breaking;
+  return { startLeft, startedAt: nowS() };
+}
+
+check('seeing the 096 face from the front starts the rage; from behind it stays idle', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(440, 72); // behind it: the 096 faces right, away from the player
+    window.__debug.setAim(0);
+  });
+  await sleep(300);
+  const behind = await s096(page);
+  assert.deepEqual([behind.visible, behind.mode], [true, 'idle']);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(560, 72); // in front of it, looking back at its face
+    window.__debug.setAim(Math.PI);
+  });
+  await waitFor(page, () => window.__debug.state().scp096[0].mode === 'rage', null, 1000);
+});
+
+check('a 096 face behind a closed door is not seen', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(340, 72);
+    window.__debug.setAim(0);
+    window.__debug.setDoor(0, 'closed');
+    window.__debug.place096(0, 440, 72, Math.PI);
+  });
+  await sleep(300);
+  const shut = await s096(page);
+  assert.deepEqual([shut.visible, shut.mode], [false, 'idle']);
+  await page.evaluate(() => window.__debug.setDoor(0, 'open'));
+  await waitFor(page, () => window.__debug.state().scp096[0].mode === 'rage', null, 1000);
+});
+
+check('a raging 096 waits ~3s at a closed door and ~6s at a locked door, then the door is broken', async (page, baseUrl) => {
+  for (const [st, secs] of [['closed', 3], ['locked', 6]]) {
+    await openRoom(page, baseUrl, {}, DOOR_ROOM);
+    const { startLeft, startedAt } = await rageAtDoor(page, st);
+    assert.ok(startLeft > secs - 0.1 && startLeft <= secs, `${st}: breaking starts at ${startLeft}`);
+    await sleep((secs - 1) * 1000);
+    assert.equal((await state(page)).doors[0].broken, false, `${st}: broken too early`);
+    await waitFor(page, () => window.__debug.state().doors[0].broken, null, 2500);
+    const took = nowS() - startedAt;
+    assert.ok(took >= secs - 0.6 && took <= secs + 1.2, `${st}: broke after ${took.toFixed(2)}s`);
+    assert.equal((await state(page)).doors[0].state, 'open');
+  }
+});
+
+check('broken doors ignore E', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await rageAtDoor(page, 'closed');
+  await waitFor(page, () => window.__debug.state().doors[0].broken, null, 4500);
+  await page.evaluate(() => {
+    window.__debug.place096(0, 488, 72, 0); // seated again, so it cannot interfere
+    window.__debug.teleportPlayer(360, 72);
+  });
+  await pressE(page);
+  await pressE(page);
+  const d = (await state(page)).doors[0];
+  assert.deepEqual([d.state, d.broken], ['open', true]);
+});
+
+check('getting 20 path tiles away from a locked door calms the 096 and it walks home', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await rageAtDoor(page, 'locked', 340);
+  await sleep(1000);
+  assert.equal((await s096(page)).mode, 'rage', 'still raging while the player is 3 tiles from the door');
+  await page.evaluate(() => window.__debug.teleportPlayer(24, 120)); // tile (1,7): 25 path tiles from the door
+  await waitFor(page, () => window.__debug.state().scp096[0].mode === 'returning', null, 1000);
+  await waitFor(page, () => window.__debug.state().scp096[0].mode === 'idle', null, 5000);
+  const home = await s096(page);
+  assert.deepEqual([home.x, home.y, home.facing], [488, 72, 0]);
+  assert.equal((await state(page)).doors[0].state, 'locked', 'calming leaves the locked door unbroken');
+});
+
+check('a raging 096 kills on touch; an idle one does not', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(480, 72);
+    window.__debug.setAim(0);
+    window.__debug.place096(0, 486, 72, 0); // 6px away, facing away from the player
+  });
+  await sleep(300);
+  assert.deepEqual([(await state(page)).mode, (await s096(page)).mode], ['playing', 'idle']);
+  await page.evaluate(() => window.__debug.rage096(0));
+  await waitFor(page, () => window.__debug.state().mode === 'dead', null, 1000);
+});
+
+check('the near096 radio line plays once when first within 12 path tiles', async (page, baseUrl) => {
+  const lines = await radioLines();
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await resetRadio(page);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(100, 72); // tile (6,4): 24 path tiles from the 096
+    window.__debug.setAim(Math.PI);
+  });
+  await sleep(200);
+  assert.equal((await state(page)).radio, null);
+  await page.evaluate(() => window.__debug.teleportPlayer(312, 72)); // tile (19,4): 11 path tiles
+  await sleep(150);
+  assert.equal((await state(page)).radio, lines.near096);
+  await page.evaluate(() => window.__debug.teleportPlayer(100, 72));
+  await waitFor(page, () => window.__debug.state().radio === null, null, 5000);
+  await sleep(150);
+  await page.evaluate(() => window.__debug.teleportPlayer(312, 72));
+  await sleep(150);
+  assert.equal((await state(page)).radio, null, 'near096 played a second time');
+});
+
+const ZONE096_SEED = 4242;
+const seated = (s) => s.scp096.every((m, i) => m.mode === 'idle' && m.x === s.map.spawns096[i].pos.x && m.y === s.map.spawns096[i].pos.y && m.facing === s.map.spawns096[i].facing);
+
+check('a raging 096 is gone (seated again) after the next zone loads', async (page, baseUrl) => {
+  await openRun(page, baseUrl, ZONE096_SEED);
+  await startRun(page, { seed: ZONE096_SEED, zone: 2, attempt: 0, hasKey: true, heard: [] });
+  const before = await state(page);
+  assert.equal(before.scp096.length, 1);
+  await page.evaluate(() => window.__debug.rage096(0));
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid(before.map.exit));
+  await waitZone(page, 3);
+  const after = await state(page);
+  assert.equal(after.scp096.length, 1);
+  assert.ok(seated(after), JSON.stringify(after.scp096));
+});
+
+check('dying during a rage restarts the zone with the 096 seated and all doors open', async (page, baseUrl) => {
+  await openRun(page, baseUrl, ZONE096_SEED);
+  await startRun(page, { seed: ZONE096_SEED, zone: 2, attempt: 0, hasKey: true, heard: [] });
+  const first = await state(page);
+  assert.ok(first.doors.length > 0, 'zone 3 has doors');
+  await page.evaluate(() => {
+    window.__debug.rage096(0);
+    window.__debug.setDoor(0, 'locked');
+  });
+  await dieHere(page);
+  await respawn(page);
+  const s = await state(page);
+  assert.equal(s.run.attempt, 1);
+  assert.ok(seated(s), JSON.stringify(s.scp096));
+  assert.ok(s.doors.every((d) => d.state === 'open' && !d.broken), JSON.stringify(s.doors));
+});
+
+check('173 and 096 in view together: 173 freezes and 096 rages', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(420, 72);
+    window.__debug.setAim(0);
+    window.__debug.place173(0, 488, 100);
+    window.__debug.place096(0, 488, 72, Math.PI);
+  });
+  await waitFor(page, () => window.__debug.state().scp096[0].mode === 'rage', null, 1000);
+  const s = await state(page);
+  assert.deepEqual([s.scp173[0].visible, s.scp173[0].frozen], [true, true]);
+});
+
 (async () => {
   let failed = 0;
   const only = process.env.SMOKE_ONLY;
