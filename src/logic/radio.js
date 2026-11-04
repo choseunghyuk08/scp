@@ -10,9 +10,12 @@ export const RADIO_LINES = {
 
 const REPEATABLE = new Set(['noKey']);
 
-/** Lines show one at a time for RADIO_LINE_MS each, in the order they were fired. */
-export function createRadio() {
-  const fired = new Set();
+/**
+ * Lines show one at a time for RADIO_LINE_MS each, in the order they were fired.
+ * `alreadyHeard` are non-repeatable events heard earlier in the run; they never play again.
+ */
+export function createRadio(alreadyHeard = []) {
+  const fired = new Set(alreadyHeard.filter((event) => !REPEATABLE.has(event)));
   const scheduled = []; // { event, text, startAt, endAt }
   let lastEndAt = 0;
 
@@ -28,6 +31,11 @@ export function createRadio() {
       const endAt = startAt + RADIO_LINE_MS;
       scheduled.push({ event, text: RADIO_LINES[event], startAt, endAt });
       lastEndAt = endAt;
+    },
+
+    /** Non-repeatable events heard so far, in the order they were first heard. */
+    heardEvents() {
+      return [...fired];
     },
 
     current(nowMs) {

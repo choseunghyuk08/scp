@@ -52,3 +52,37 @@ test('noKey queued behind another line is not queued twice', () => {
   assert.equal(r.current(4000), RADIO_LINES.noKey);
   assert.equal(r.current(8000), null);
 });
+
+test('events passed as alreadyHeard are ignored by fire', () => {
+  const r = createRadio(['start']);
+  r.fire('start', 0);
+  assert.equal(r.current(0), null);
+});
+
+test('heardEvents lists fired non-repeatable events in order, including the initial ones', () => {
+  const r = createRadio(['start']);
+  r.fire('seen173', 0);
+  r.fire('gotKey', 10);
+  assert.deepEqual(r.heardEvents(), ['start', 'seen173', 'gotKey']);
+});
+
+test('noKey is never recorded as heard, even when passed in', () => {
+  const r = createRadio(['noKey']);
+  r.fire('noKey', 0);
+  assert.equal(r.current(0), RADIO_LINES.noKey);
+  assert.deepEqual(r.heardEvents(), []);
+});
+
+test('createRadio() without an argument behaves as before', () => {
+  const r = createRadio();
+  r.fire('start', 0);
+  r.fire('start', 10);
+  assert.equal(r.current(0), RADIO_LINES.start);
+  assert.deepEqual(r.heardEvents(), ['start']);
+});
+
+test('heardEvents returns a copy', () => {
+  const r = createRadio(['start']);
+  r.heardEvents().push('gotKey');
+  assert.deepEqual(r.heardEvents(), ['start']);
+});
