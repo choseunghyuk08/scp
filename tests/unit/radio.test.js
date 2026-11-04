@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRadio, RADIO_LINES } from '../../src/logic/radio.js';
 
 test('every radio event has a Korean line', () => {
-  assert.deepEqual(Object.keys(RADIO_LINES).sort(), ['blinkWarning', 'gotKey', 'noKey', 'seen173', 'start']);
+  assert.deepEqual(Object.keys(RADIO_LINES).sort(), ['blinkWarning', 'gotKey', 'near096', 'noKey', 'seen173', 'start']);
   for (const line of Object.values(RADIO_LINES)) assert.match(line, /[가-힣]/);
 });
 
@@ -85,4 +85,13 @@ test('heardEvents returns a copy', () => {
   const r = createRadio(['start']);
   r.heardEvents().push('gotKey');
   assert.deepEqual(r.heardEvents(), ['start']);
+});
+
+test('near096 is a non-repeatable Korean line', () => {
+  assert.equal(RADIO_LINES.near096, 'SCP-096이다. 얼굴을 보지 마라.');
+  const r = createRadio();
+  r.fire('near096', 0);
+  r.fire('near096', 5000);
+  assert.equal(r.current(5000), null);
+  assert.deepEqual(r.heardEvents(), ['near096']);
 });

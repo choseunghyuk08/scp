@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AGGRO_TILES, ZONE_COUNT, ZONE_MIN_PATH, ZONE_SCP173 } from '../../src/config.js';
+import { AGGRO_TILES, ZONE_COUNT, ZONE_MIN_PATH, ZONE_SCP096, ZONE_SCP173 } from '../../src/config.js';
 import {
   activationFor,
   advanceZone,
@@ -123,4 +123,18 @@ test('parseSeedParam accepts digits up to 4294967295 and rejects everything else
   for (const bad of ['', '?seed=', '?seed=abc', '?seed=-5', '?seed=1e9', '?seed=12.5', '?seed=4294967296', '?seed=99999999999', '?seed=12345678901', '?debug=1', '?seed= 5', undefined, null]) {
     assert.equal(parseSeedParam(bad), null, `should reject ${bad}`);
   }
+});
+
+test('zoneSpec: zones 2 and 3 have one SCP-096 and four rooms; zones 0 and 1 have none', () => {
+  assert.deepEqual(ZONE_SCP096, [0, 0, 1, 1]);
+  for (const seed of seeds(200)) {
+    const specs = Array.from({ length: ZONE_COUNT }, (_, i) => zoneSpec(seed, i));
+    assert.deepEqual(specs.map((s) => s.scp096Count), [0, 0, 1, 1]);
+    assert.deepEqual([specs[2].roomCount, specs[3].roomCount], [4, 4]);
+  }
+});
+
+test('every zone has exactly one SCP-173 now', () => {
+  assert.deepEqual(ZONE_SCP173, [1, 1, 1, 1]);
+  for (let i = 0; i < ZONE_COUNT; i++) assert.equal(zoneSpec(5, i).scp173Count, 1);
 });

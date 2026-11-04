@@ -1,9 +1,9 @@
-import { AGGRO_TILES, ZONE_COUNT, ZONE_MIN_PATH, ZONE_SCP173 } from '../config.js';
+import { AGGRO_TILES, ZONE_COUNT, ZONE_MIN_PATH, ZONE_SCP096, ZONE_SCP173 } from '../config.js';
 import { RADIO_LINES } from './radio.js';
 import { hashSeed } from './rng.js';
 
 // Run = { seed, zone, attempt, hasKey, heard } — everything that must survive a death or a reload.
-// ZoneSpec = { index, isTutorial, isFinal, hasKey, roomCount, minPath, scp173Count }.
+// ZoneSpec = { index, isTutorial, isFinal, hasKey, roomCount, minPath, scp173Count, scp096Count }.
 
 const SAVE_VERSION = 1;
 const MAX_SEED = 4294967295;
@@ -26,9 +26,11 @@ export function zoneSpec(seed, index) {
     isTutorial,
     isFinal: index === ZONE_COUNT - 1,
     hasKey: index === keyZone(seed),
-    roomCount: isTutorial ? 3 : 3 + (hashSeed(seed, index, 1) % 2),
+    // A zone with a 096 needs a spare room for it besides the entrance, exit and card-key rooms.
+    roomCount: isTutorial ? 3 : ZONE_SCP096[index] > 0 ? 4 : 3 + (hashSeed(seed, index, 1) % 2),
     minPath: ZONE_MIN_PATH[index],
     scp173Count: ZONE_SCP173[index],
+    scp096Count: ZONE_SCP096[index],
   };
 }
 

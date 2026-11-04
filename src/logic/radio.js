@@ -6,6 +6,7 @@ export const RADIO_LINES = {
   blinkWarning: '눈이 깜빡이려 한다. 그 순간이 가장 위험하다.',
   gotKey: '카드키를 확보했다. 출구 문으로 가서 E를 눌러라.',
   noKey: '출구가 잠겨 있다. 카드키부터 찾아라.',
+  near096: 'SCP-096이다. 얼굴을 보지 마라.',
 };
 
 const REPEATABLE = new Set(['noKey']);
