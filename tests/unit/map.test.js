@@ -48,3 +48,31 @@ test('the default still requires a K (v0.1 behavior)', () =>
 
 test('requireKey:true still rejects a missing K explicitly', () =>
   assert.throws(() => parseMap(['####', '#@X#', '####'], { requireKey: true }), /K/));
+
+test('D tiles are floor and adjacent Ds form one door', () => {
+  const m = parseMap(['#######', '#@.#..#', '#..D..#', '#..D.K#', '#..#..X', '#######']);
+  assert.deepEqual(m.doors, [[{ tx: 3, ty: 2 }, { tx: 3, ty: 3 }]]);
+  assert.equal(m.grid[2][3], false);
+  assert.equal(m.grid[3][3], false);
+});
+
+test('separate Ds form separate doors in reading order', () => {
+  const m = parseMap(['#######', '#@...D#', '#.....#', '#....K#', '#.D...X', '#######']);
+  assert.deepEqual(m.doors, [[{ tx: 5, ty: 1 }], [{ tx: 2, ty: 4 }]]);
+});
+
+test('096 arrows become spawns with facing angles', () => {
+  const m = parseMap(['#######', '#@>v<^#', '#K....X', '#######']);
+  assert.deepEqual(m.spawns096, [
+    { pos: { x: 40, y: 24 }, facing: 0 },
+    { pos: { x: 56, y: 24 }, facing: Math.PI / 2 },
+    { pos: { x: 72, y: 24 }, facing: Math.PI },
+    { pos: { x: 88, y: 24 }, facing: -Math.PI / 2 },
+  ]);
+  assert.equal(m.grid[1][2], false);
+});
+
+test('maps without doors or 096 report empty lists', () => {
+  const m = parseMap(rows);
+  assert.deepEqual([m.doors, m.spawns096], [[], []]);
+});

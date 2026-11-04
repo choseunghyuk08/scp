@@ -1,7 +1,35 @@
 import { tileCenter } from './grid.js';
 
-// Legend: # wall, . floor, @ player start, K card key, X exit door (solid), S SCP-173 spawn.
-const FLOOR_CHARS = new Set(['.', '@', 'K', 'S']);
+// Legend: # wall, . floor, @ player start, K card key, X exit door (solid), S SCP-173 spawn,
+// D door tile (starts open, so floor), ^ > v < SCP-096 spawn facing up/right/down/left.
+const FACING_096 = { '>': 0, v: Math.PI / 2, '<': Math.PI, '^': -Math.PI / 2 };
+const FLOOR_CHARS = new Set(['.', '@', 'K', 'S', 'D', ...Object.keys(FACING_096)]);
+
+/** Groups 4-connected door tiles into doors, ordered by each door's first tile in reading order. */
+function groupDoors(tiles) {
+  const key = (t) => `${t.tx},${t.ty}`;
+  const pending = new Map(tiles.map((t) => [key(t), t]));
+  const doors = [];
+  for (const t of tiles) {
+    if (!pending.has(key(t))) continue;
+    const door = [];
+    const stack = [t];
+    pending.delete(key(t));
+    while (stack.length) {
+      const cur = stack.pop();
+      door.push(cur);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const k = `${cur.tx + dx},${cur.ty + dy}`;
+        if (pending.has(k)) {
+          stack.push(pending.get(k));
+          pending.delete(k);
+        }
+      }
+    }
+    doors.push(door.sort((a, b) => a.ty - b.ty || a.tx - b.tx));
+  }
+  return doors;
+}
 
 /**
  * `requireKey` (default true) demands exactly one 'K'. With requireKey:false a map may have no card key
@@ -14,6 +42,8 @@ export function parseMap(rows, { requireKey = true } = {}) {
 
   const found = { '@': [], K: [], X: [] };
   const spawns173 = [];
+  const spawns096 = [];
+  const doorTiles = [];
   const grid = rows.map((row, ty) =>
     [...row].map((ch, tx) => {
       if (ch === '#') return true;
@@ -24,6 +54,8 @@ export function parseMap(rows, { requireKey = true } = {}) {
       if (!FLOOR_CHARS.has(ch)) throw new Error(`unknown map character '${ch}' at (${tx},${ty})`);
       if (ch === '@' || ch === 'K') found[ch].push({ tx, ty });
       if (ch === 'S') spawns173.push(tileCenter(tx, ty));
+      if (ch === 'D') doorTiles.push({ tx, ty });
+      if (ch in FACING_096) spawns096.push({ pos: tileCenter(tx, ty), facing: FACING_096[ch] });
       return false;
     }),
   );
@@ -43,5 +75,7 @@ export function parseMap(rows, { requireKey = true } = {}) {
     cardKey: key ? tileCenter(key.tx, key.ty) : null,
     exit: found.X[0],
     spawns173,
+    doors: groupDoors(doorTiles),
+    spawns096,
   };
 }
