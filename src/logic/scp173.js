@@ -1,6 +1,5 @@
 import { SCP173 } from '../config.js';
-import { findPath } from './pathfinding.js';
-import { tileCenter, tileOf } from './grid.js';
+import { chaseStep } from './chase.js';
 
 const ALWAYS = { kind: 'always' };
 
@@ -20,32 +19,9 @@ export function step173(s, { dt, grid, player, observed, activation = ALWAYS }) 
   if (observed) return { pos: { ...s.pos }, frozen: true, awake };
   if (activation.kind === 'sighting' && !awake) return { pos: { ...s.pos }, frozen: true, awake };
 
-  const path = findPath(
-    grid,
-    { tx: tileOf(s.pos.x), ty: tileOf(s.pos.y) },
-    { tx: tileOf(player.x), ty: tileOf(player.y) },
-  );
-  if (path === null) return { pos: { ...s.pos }, frozen: false, awake };
-  if (activation.kind === 'radius' && path.length > activation.tiles) return { pos: { ...s.pos }, frozen: false, awake };
-
-  // Tile centers up to (not including) the player's tile, then the player's exact position.
-  const waypoints = [...path.slice(0, -1).map((t) => tileCenter(t.tx, t.ty)), player];
-  let { x, y } = s.pos;
-  let budget = SCP173.speed * dt;
-  for (const wp of waypoints) {
-    if (budget <= 0) break;
-    const d = Math.hypot(wp.x - x, wp.y - y);
-    if (d <= budget) {
-      x = wp.x;
-      y = wp.y;
-      budget -= d;
-    } else {
-      x += ((wp.x - x) / d) * budget;
-      y += ((wp.y - y) / d) * budget;
-      budget = 0;
-    }
-  }
-  return { pos: { x, y }, frozen: false, awake };
+  const maxTiles = activation.kind === 'radius' ? activation.tiles : Infinity;
+  const { pos } = chaseStep(s.pos, player, grid, SCP173.speed * dt, undefined, maxTiles);
+  return { pos, frozen: false, awake };
 }
 
 export function isLethal(s, player) {

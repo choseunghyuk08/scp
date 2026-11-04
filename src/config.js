@@ -30,3 +30,12 @@ export const R_CONFIRM_MS = 3000;
 
 // v0.3 doors
 export const DOOR_INTERACT_DIST = 24;
+export const SCP096 = {
+  speed: 150,
+  returnSpeed: 48,
+  touchDistance: 10,
+  faceHalfAngle: (60 * Math.PI) / 180,
+  calmTiles: 20,
+  warnTiles: 12,
+  breakSeconds: { closed: 3, locked: 6 },
+};
