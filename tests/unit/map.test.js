@@ -33,3 +33,18 @@ test('missing K throws', () => assert.throws(() => parseMap(['####', '#@X#', '##
 test('missing X throws', () => assert.throws(() => parseMap(['####', '#@K#', '####']), /X/));
 test('duplicate K throws', () => assert.throws(() => parseMap(['#####', '#@KK#', '#X..#', '#####']), /K/));
 test('unknown characters throw', () => assert.throws(() => parseMap(['####', '#@?#', '####']), /\?/));
+
+test('requireKey:false allows no K and returns cardKey null', () =>
+  assert.equal(parseMap(['####', '#@X#', '####'], { requireKey: false }).cardKey, null));
+
+test('requireKey:false still parses a single K at its tile centre', () =>
+  assert.deepEqual(parseMap(['#####', '#@KX#', '#####'], { requireKey: false }).cardKey, { x: 40, y: 24 }));
+
+test('requireKey:false still rejects two Ks', () =>
+  assert.throws(() => parseMap(['#####', '#@KK#', '#X..#', '#####'], { requireKey: false }), /K/));
+
+test('the default still requires a K (v0.1 behavior)', () =>
+  assert.throws(() => parseMap(['####', '#@X#', '####']), /K/));
+
+test('requireKey:true still rejects a missing K explicitly', () =>
+  assert.throws(() => parseMap(['####', '#@X#', '####'], { requireKey: true }), /K/));

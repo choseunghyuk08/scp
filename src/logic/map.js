@@ -3,7 +3,11 @@ import { tileCenter } from './grid.js';
 // Legend: # wall, . floor, @ player start, K card key, X exit door (solid), S SCP-173 spawn.
 const FLOOR_CHARS = new Set(['.', '@', 'K', 'S']);
 
-export function parseMap(rows) {
+/**
+ * `requireKey` (default true) demands exactly one 'K'. With requireKey:false a map may have no card key
+ * (cardKey is then null), but never two.
+ */
+export function parseMap(rows, { requireKey = true } = {}) {
   if (rows.length === 0 || rows[0].length === 0) throw new Error('map is empty');
   const cols = rows[0].length;
   if (rows.some((r) => r.length !== cols)) throw new Error('map rows are ragged (different lengths)');
@@ -25,9 +29,9 @@ export function parseMap(rows) {
   );
 
   for (const marker of ['@', 'K', 'X']) {
-    if (found[marker].length !== 1) {
-      throw new Error(`map needs exactly one '${marker}', found ${found[marker].length}`);
-    }
+    const count = found[marker].length;
+    const allowed = marker === 'K' && !requireKey ? count <= 1 : count === 1;
+    if (!allowed) throw new Error(`map needs exactly one '${marker}'${marker === 'K' && !requireKey ? ' (or none)' : ''}, found ${count}`);
   }
   const [start] = found['@'];
   const [key] = found.K;
@@ -36,7 +40,7 @@ export function parseMap(rows) {
     cols,
     rows: rows.length,
     playerStart: tileCenter(start.tx, start.ty),
-    cardKey: tileCenter(key.tx, key.ty),
+    cardKey: key ? tileCenter(key.tx, key.ty) : null,
     exit: found.X[0],
     spawns173,
   };
