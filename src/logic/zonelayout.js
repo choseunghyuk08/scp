@@ -92,6 +92,18 @@ function corridorCells(rng, grid, A, B) {
   const a = centerOf(A);
   const b = centerOf(B);
   const straight = manhattan(a, b);
+  // A corridor may touch its own two rooms only at its 2-tile mouth; running along a room's wall would leave that
+  // side open with no doorway to put a door in.
+  const meetsRoomsHeadOn = (cells) => {
+    const outside = new Map();
+    for (const c of cells) if (!inRect(A, c.x, c.y) && !inRect(B, c.x, c.y)) outside.set(`${c.x},${c.y}`, c);
+    for (const room of [A, B]) {
+      let touching = 0;
+      for (const c of outside.values()) if (DIRS.some(([dx, dy]) => inRect(room, c.x + dx, c.y + dy))) touching++;
+      if (touching > 2) return false;
+    }
+    return true;
+  };
   const clean = (cells) => {
     const own = new Set(cells.map((c) => `${c.x},${c.y}`));
     for (const c of cells) {
@@ -103,7 +115,7 @@ function corridorCells(rng, grid, A, B) {
         if (grid[ny]?.[nx] === false && !inRect(A, nx, ny) && !inRect(B, nx, ny) && !own.has(`${nx},${ny}`)) return false;
       }
     }
-    return true;
+    return meetsRoomsHeadOn(cells);
   };
 
   let best = null;
@@ -114,7 +126,10 @@ function corridorCells(rng, grid, A, B) {
     const cells = [...lCells(a, w, rng() < 0.5), ...lCells(w, b, rng() < 0.5)];
     if (clean(cells)) best = { cells, detour };
   }
-  return best ? best.cells : lCells(a, b, rng() < 0.5);
+  if (best) return best.cells;
+  const first = rng() < 0.5;
+  const plain = [lCells(a, b, first), lCells(a, b, !first)];
+  return plain.find(meetsRoomsHeadOn) ?? plain[0];
 }
 
 export function layoutZone(rng, { cols, rows, roomCount }) {
@@ -147,4 +162,46 @@ export function layoutZone(rng, { cols, rows, roomCount }) {
     for (const c of corridorCells(rng, grid, rooms[i], rooms[j])) set(c.x, c.y, false);
   }
   return { grid, rooms, edges };
+}
+
+/**
+ * Doorways: floor tiles just outside a room that touch one of its edge tiles, grouped 4-connected. Only two-tile
+ * groups (a 2-wide corridor meeting the wall head-on) count; a corridor running along a wall is not a doorway.
+ */
+export function findDoorways(grid, rooms) {
+  const inAnyRoom = (x, y) => rooms.some((r) => inRect(r, x, y));
+  const out = [];
+  for (const r of rooms) {
+    const mouth = new Map();
+    for (let y = r.y; y < r.y + r.h; y++) {
+      for (let x = r.x; x < r.x + r.w; x++) {
+        if (x !== r.x && x !== r.x + r.w - 1 && y !== r.y && y !== r.y + r.h - 1) continue;
+        for (const [dx, dy] of DIRS) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (grid[ny]?.[nx] === false && !inAnyRoom(nx, ny)) mouth.set(`${nx},${ny}`, { tx: nx, ty: ny });
+        }
+      }
+    }
+    const seen = new Set();
+    for (const [k, t] of mouth) {
+      if (seen.has(k)) continue;
+      const group = [];
+      const stack = [t];
+      seen.add(k);
+      while (stack.length) {
+        const cur = stack.pop();
+        group.push(cur);
+        for (const [dx, dy] of DIRS) {
+          const nk = `${cur.tx + dx},${cur.ty + dy}`;
+          if (mouth.has(nk) && !seen.has(nk)) {
+            seen.add(nk);
+            stack.push(mouth.get(nk));
+          }
+        }
+      }
+      if (group.length === 2) out.push(group.sort((a, b) => a.ty - b.ty || a.tx - b.tx));
+    }
+  }
+  return out;
 }

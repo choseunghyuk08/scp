@@ -174,3 +174,63 @@ test('generated zones with two 173s keep them at least 29 path tiles apart', () 
     assert.deepEqual(validateZoneMap(buildZone(seed, spec, 0).map, spec), [], `seed ${seed}`);
   }
 });
+
+const SPEC096 = { index: 3, isTutorial: false, isFinal: true, hasKey: true, roomCount: 4, minPath: 0, scp173Count: 1, scp096Count: 1 };
+
+test('validateZoneMap reports a missing 096, a 096 seen from the start, and a 096 too close to a 173', () => {
+  const base = [{ x: 25, y: 3, ch: 'K' }, { x: 35, y: 1, ch: 'S' }];
+  assert.deepEqual(problems(edit(LONG, [...base, { x: 70, y: 1, ch: '<' }]), SPEC096), []);
+  assert.ok(problems(edit(LONG, base), SPEC096).some((p) => /expected 1 scp096/.test(p)));
+  assert.ok(problems(edit(LONG, [...base, { x: 5, y: 1, ch: '<' }]), SPEC096).some((p) => /scp096 0 visible from the start/.test(p)));
+  assert.ok(problems(edit(LONG, [...base, { x: 40, y: 1, ch: '<' }]), SPEC096).some((p) => /scp096 0 and spawn 0 are/.test(p)));
+});
+
+const roomCenterOf = (r) => ({ tx: r.x + Math.floor(r.w / 2), ty: r.y + Math.floor(r.h / 2) });
+
+test('096 zones place one 096 outside the entrance, exit and key rooms, near its room centre', () => {
+  for (let seed = 0; seed < 30; seed++) {
+    for (const z of [2, 3]) {
+      const { map, info } = buildZone(seed, zoneSpec(seed, z), 0);
+      assert.equal(map.spawns096.length, 1, `seed ${seed} zone ${z}`);
+      const t = tileOfPoint(map.spawns096[0].pos);
+      const room = roomOf(info.rooms, t);
+      assert.ok(room >= 0, `seed ${seed} zone ${z}: 096 outside every room`);
+      const excluded = [roomOf(info.rooms, tileOfPoint(map.playerStart)), doorRoom(map, info.rooms)];
+      if (map.cardKey) excluded.push(roomOf(info.rooms, tileOfPoint(map.cardKey)));
+      assert.ok(!excluded.includes(room), `seed ${seed} zone ${z}: 096 in a forbidden room`);
+      const c = roomCenterOf(info.rooms[room]);
+      assert.ok(Math.hypot(t.tx - c.tx, t.ty - c.ty) <= 3, `seed ${seed} zone ${z}: 096 far from its room centre`);
+    }
+  }
+});
+
+test('the 096 never faces the doorway the shortest route arrives through (>= 90deg away)', () => {
+  for (let seed = 0; seed < 30; seed++) {
+    for (const z of [2, 3]) {
+      const { map } = buildZone(seed, zoneSpec(seed, z), 0);
+      const open = map.grid.map((row) => [...row]);
+      open[map.exit.ty][map.exit.tx] = false;
+      const { pos, facing } = map.spawns096[0];
+      const path = findPath(open, tileOfPoint(map.playerStart), tileOfPoint(pos));
+      const doorTiles = new Set(map.doors.flat().map((t) => `${t.tx},${t.ty}`));
+      const arrival = [...path].reverse().find((t) => doorTiles.has(`${t.tx},${t.ty}`));
+      assert.ok(arrival, `seed ${seed} zone ${z}: the route crosses no door`);
+      const toDoor = Math.atan2(arrival.ty * 16 + 8 - pos.y, arrival.tx * 16 + 8 - pos.x);
+      const diff = Math.abs(Math.atan2(Math.sin(facing - toDoor), Math.cos(facing - toDoor)));
+      assert.ok(diff >= Math.PI / 2 - 1e-9, `seed ${seed} zone ${z}: faces ${diff} rad from its arrival doorway`);
+    }
+  }
+});
+
+test('doors are written at room entrances and start open', () => {
+  for (let seed = 0; seed < 30; seed++) {
+    for (let z = 0; z < ZONE_COUNT; z++) {
+      const { map } = buildZone(seed, zoneSpec(seed, z), 0);
+      assert.ok(map.doors.length > 0, `seed ${seed} zone ${z}: no doors`);
+      for (const door of map.doors) {
+        assert.equal(door.length, 2);
+        for (const t of door) assert.equal(map.grid[t.ty][t.tx], false);
+      }
+    }
+  }
+});

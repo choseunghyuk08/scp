@@ -4,7 +4,8 @@ import { tileCenter, tileOf } from './grid.js';
 import { parseMap } from './map.js';
 import { createRng, hashSeed, randInt, shuffle } from './rng.js';
 import { hasLineOfSight } from './vision.js';
-import { layoutZone } from './zonelayout.js';
+import { findPath } from './pathfinding.js';
+import { findDoorways, layoutZone } from './zonelayout.js';
 
 // ZoneBuild = { map: ParsedMap, info: { zoneIndex, tries, usedFallback, rooms, pathLength } }.
 
@@ -12,6 +13,10 @@ const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 // Two 173s this many path tiles apart can never both be within AGGRO_TILES of the player, so they cannot pincer.
 const SPAWN_GAP = 2 * AGGRO_TILES + 1;
 const TUTORIAL_SPAWN_RADIUS = 4; // tiles from the middle room's centre
+const SCP096_CENTER_RADIUS = 3; // tiles from its room's centre
+const CARDINALS = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+const ARROW = new Map([[0, '>'], [Math.PI / 2, 'v'], [Math.PI, '<'], [-Math.PI / 2, '^']]);
+const angleDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
 
 const tileOfPoint = (p) => ({ tx: tileOf(p.x), ty: tileOf(p.y) });
 const centerTile = (r) => ({ tx: r.x + Math.floor(r.w / 2), ty: r.y + Math.floor(r.h / 2) });
@@ -87,6 +92,21 @@ function inspect(map, spec) {
       if (d >= 0 && d < SPAWN_GAP) problems.push(`spawns ${i} and ${j} are ${d} path tiles apart and can hunt at once`);
     }
   }
+
+  const want096 = spec.scp096Count ?? 0;
+  if (map.spawns096.length !== want096) problems.push(`expected ${want096} scp096, found ${map.spawns096.length}`);
+  map.spawns096.forEach(({ pos }, i) => {
+    const t = tileOfPoint(pos);
+    const d = at(fromStart, t);
+    if (d < 0) problems.push(`scp096 ${i} unreachable from the start`);
+    else if (d < SPAWN_MIN_PATH) problems.push(`scp096 ${i} only ${d} path tiles from the start`);
+    if (hasLineOfSight(map.grid, map.playerStart, pos)) problems.push(`scp096 ${i} visible from the start`);
+    const field = distanceField(open, t.tx, t.ty);
+    spawnTiles.forEach((s, j) => {
+      const gap = at(field, s);
+      if (gap >= 0 && gap < SPAWN_GAP) problems.push(`scp096 ${i} and spawn ${j} are ${gap} path tiles apart`);
+    });
+  });
 
   map.spawns173.forEach((s, i) => {
     const d = at(fromStart, tileOfPoint(s));
@@ -171,20 +191,52 @@ function tryBuild(rng, spec) {
   const others = rooms.map((_, i) => i).filter((i) => i !== entrance && i !== exitRoom);
 
   let key = null;
+  let keyRoom = -1;
   if (spec.hasKey) {
     if (!others.length) return null;
     const degree = rooms.map((_, i) => edges.filter((e) => e.includes(i)).length);
     const leaves = others.filter((i) => degree[i] === 1);
     const pool = leaves.length ? leaves : others;
     const detour = (i) => fromStart[idx(anchors[i])] + fromDoor[idx(anchors[i])];
-    const keyRoom = pool.reduce((best, i) => (detour(i) > detour(best) ? i : best), pool[0]);
+    keyRoom = pool.reduce((best, i) => (detour(i) > detour(best) ? i : best), pool[0]);
     const spots = floorTiles(grid, rooms[keyRoom], 2);
     if (!spots.length) return null;
     key = spots[randInt(rng, 0, spots.length - 1)];
   }
 
-  const spawnRooms = spec.isTutorial ? others : rooms.map((_, i) => i).filter((i) => i !== entrance);
+  const doorways = findDoorways(grid, rooms);
   const startPoint = tileCenter(start.tx, start.ty);
+
+  // SCP-096 goes in first: a spare room on the way (not entrance, exit or card-key room), near its centre, hidden
+  // from the start. It sits facing at least 90 degrees away from the doorway the shortest route arrives through.
+  const placed096 = [];
+  if (spec.scp096Count) {
+    const doorTile = new Set(doorways.flat().map((t) => `${t.tx},${t.ty}`));
+    for (const i of shuffle(rng, others.filter((i) => i !== keyRoom))) {
+      if (placed096.length === spec.scp096Count) break;
+      const c = centerTile(rooms[i]);
+      const spots = floorTiles(grid, rooms[i], 0).filter(
+        (t) =>
+          Math.hypot(t.tx - c.tx, t.ty - c.ty) <= SCP096_CENTER_RADIUS &&
+          fromStart[idx(t)] >= SPAWN_MIN_PATH &&
+          !hasLineOfSight(grid, startPoint, tileCenter(t.tx, t.ty)),
+      );
+      if (!spots.length) continue;
+      const t = spots[randInt(rng, 0, spots.length - 1)];
+      const route = findPath(open, start, t) ?? [];
+      const arrival = [...route].reverse().find((p) => doorTile.has(`${p.tx},${p.ty}`));
+      if (!arrival) continue;
+      const toDoor = Math.atan2(arrival.ty - t.ty, arrival.tx - t.tx);
+      const facings = CARDINALS.filter((f) => angleDiff(f, toDoor) >= Math.PI / 2);
+      placed096.push({ tile: t, room: i, facing: facings[randInt(rng, 0, facings.length - 1)] });
+    }
+    if (placed096.length < spec.scp096Count) return null;
+  }
+  const fields096 = placed096.map(({ tile }) => distanceField(open, tile.tx, tile.ty));
+
+  const spawnRooms = (spec.isTutorial ? others : rooms.map((_, i) => i).filter((i) => i !== entrance)).filter(
+    (i) => !placed096.some((p) => p.room === i),
+  );
   const candidates = [];
   for (const i of spawnRooms) {
     const c = centerTile(rooms[i]);
@@ -192,6 +244,7 @@ function tryBuild(rng, spec) {
       if (spec.isTutorial && Math.hypot(t.tx - c.tx, t.ty - c.ty) > TUTORIAL_SPAWN_RADIUS) continue;
       if (fromStart[idx(t)] < SPAWN_MIN_PATH) continue;
       if (key && Math.hypot(t.tx - key.tx, t.ty - key.ty) < SPAWN_KEY_MIN_TILES) continue;
+      if (fields096.some((field) => field[idx(t)] < SPAWN_GAP)) continue;
       if (hasLineOfSight(grid, startPoint, tileCenter(t.tx, t.ty))) continue;
       candidates.push(t);
     }
@@ -212,6 +265,8 @@ function tryBuild(rng, spec) {
   chars[door.ty][door.tx] = 'X';
   if (key) chars[key.ty][key.tx] = 'K';
   for (const s of spawns) chars[s.ty][s.tx] = 'S';
+  for (const d of doorways.flat()) chars[d.ty][d.tx] = 'D';
+  for (const p of placed096) chars[p.tile.ty][p.tile.tx] = ARROW.get(p.facing);
   return { map: parseMap(chars.map((row) => row.join('')), { requireKey: spec.hasKey }), rooms };
 }
 

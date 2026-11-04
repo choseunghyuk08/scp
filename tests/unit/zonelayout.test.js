@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ZONE_COLS, ZONE_ROWS } from '../../src/config.js';
 import { createRng } from '../../src/logic/rng.js';
-import { layoutZone } from '../../src/logic/zonelayout.js';
+import { findDoorways, layoutZone } from '../../src/logic/zonelayout.js';
 
 const P = (roomCount) => ({ cols: ZONE_COLS, rows: ZONE_ROWS, roomCount });
 const cases = [];
@@ -114,4 +114,29 @@ test('pillars appear in at least 40% of seeds and no room holds more than 8 inte
     if (any) withPillars++;
   }
   assert.ok(withPillars / layouts.length >= 0.4, `pillars in ${withPillars}/${layouts.length}`);
+});
+
+test('findDoorways returns two-tile floor groups just outside rooms', () => {
+  for (const { grid, rooms, seed } of layouts) {
+    for (const group of findDoorways(grid, rooms)) {
+      assert.equal(group.length, 2, `seed ${seed}`);
+      for (const t of group) {
+        assert.equal(grid[t.ty][t.tx], false);
+        assert.ok(!rooms.some((r) => t.tx >= r.x && t.tx < r.x + r.w && t.ty >= r.y && t.ty < r.y + r.h));
+      }
+    }
+  }
+});
+
+test('at least 97% of rooms have a doorway (corridors meet rooms head-on instead of running along their walls)', () => {
+  let rooms = 0;
+  let missing = 0;
+  for (const { grid, rooms: zoneRooms } of layouts) {
+    const groups = findDoorways(grid, zoneRooms);
+    for (const r of zoneRooms) {
+      rooms++;
+      if (!groups.some((g) => g.some((t) => t.tx >= r.x - 1 && t.tx <= r.x + r.w && t.ty >= r.y - 1 && t.ty <= r.y + r.h))) missing++;
+    }
+  }
+  assert.ok(missing / rooms <= 0.03, `${missing} of ${rooms} rooms have no doorway`);
 });
