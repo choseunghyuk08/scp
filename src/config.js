@@ -20,3 +20,5 @@ export const ZONE_COUNT = 4;
 export const ZONE_MIN_PATH = [90, 120, 120, 120];
 export const ZONE_SCP173 = [1, 1, 2, 2];
 export const SAVE_KEY = 'gaze.run.v1';
+export const ZONE_COLS = 60;
+export const ZONE_ROWS = 36;
