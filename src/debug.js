@@ -45,6 +45,7 @@ export function installDebug(scene) {
       rArmed: scene.rPress.isArmed(scene.nowMs()),
       debugView: scene.debugView,
       debugText: scene.debugView ? scene.debugLabel() : '',
+      doors: scene.doors.map(({ id, state, broken }) => ({ id, state, broken })),
       zone: scene.zoneInfo
         ? { usedFallback: scene.zoneInfo.usedFallback, tries: scene.zoneInfo.tries, rooms: scene.zoneInfo.rooms }
         : null,
@@ -73,6 +74,10 @@ export function installDebug(scene) {
     giveKey() {
       scene.hasKey = true;
       scene.keyGfx.clear();
+    },
+    setDoor(id, state) {
+      const door = scene.doors.find((d) => d.id === id);
+      scene.setDoorState(id, { ...door, state });
     },
     resetRadio() {
       scene.radio = createRadio();

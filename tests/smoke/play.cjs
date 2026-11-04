@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { withPage } = require('./helpers.cjs');
-const { OPEN_ROOM } = require('./rooms.cjs');
+const { OPEN_ROOM, DOOR_ROOM } = require('./rooms.cjs');
 
 const checks = [];
 function check(name, fn) {
@@ -20,11 +20,11 @@ check('boot', async (page, baseUrl) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const state = (page) => page.evaluate(() => window.__debug.state());
 
-async function openRoom(page, baseUrl, extra = {}) {
+async function openRoom(page, baseUrl, extra = {}, rows = OPEN_ROOM) {
   await page.goto(`${baseUrl}/index.html?debug=1`);
   await page.waitForFunction(() => window.__debug, null, { timeout: 5000 });
   const gen = await page.evaluate(() => window.__debug.state().generation);
-  await page.evaluate(([rows, more]) => window.__debug.loadRows(rows, more), [OPEN_ROOM, extra]);
+  await page.evaluate(([r, more]) => window.__debug.loadRows(r, more), [rows, extra]);
   await page.waitForFunction((g) => window.__debug.state().generation > g, gen, { timeout: 5000 });
 }
 
@@ -751,6 +751,105 @@ check('a reload during the gate fade resumes in the next zone', async (page, bas
   await page.goto(`${baseUrl}/index.html?debug=1`);
   await page.waitForFunction(() => window.__debug?.state().run, null, { timeout: 5000 });
   assert.deepEqual([(await state(page)).run.seed, (await state(page)).run.zone], [2468, 1]);
+});
+
+// ---- v0.3 doors (DOOR_ROOM: wall at x=23, door tiles (23,4) and (23,5), door centre (376,80)) ----
+
+const doorState = async (page) => (await state(page)).doors[0].state;
+const pressE = async (page) => {
+  await page.keyboard.press('e');
+  await sleep(60);
+};
+// A dormant 173 (sighting mode) stays put until seen, so it can stand in a doorway or behind a door.
+const SLEEPY = { activation: { kind: 'sighting' } };
+
+check('E cycles the nearest door open -> closed -> locked -> open', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await page.evaluate(() => window.__debug.teleportPlayer(360, 72));
+  const seen = [await doorState(page)];
+  for (let i = 0; i < 3; i++) {
+    await pressE(page);
+    seen.push(await doorState(page));
+  }
+  assert.deepEqual(seen, ['open', 'closed', 'locked', 'open']);
+});
+
+check('a closed door blocks walking and sight', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, SLEEPY, DOOR_ROOM);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(340, 72);
+    window.__debug.setAim(0);
+    window.__debug.setDoor(0, 'closed');
+    window.__debug.place173(0, 440, 72);
+  });
+  await sleep(150);
+  assert.equal((await state(page)).scp173[0].visible, false, 'a 173 behind a closed door is not seen');
+  await page.keyboard.down('d');
+  await sleep(500);
+  await page.keyboard.up('d');
+  const x = (await state(page)).player.x;
+  assert.ok(x <= 23 * 16 - 5 + 0.01, `walked into the closed door: x ${x}`);
+  await page.evaluate(() => window.__debug.setDoor(0, 'open'));
+  await sleep(150);
+  assert.equal((await state(page)).scp173[0].visible, true, 'the same 173 is seen once the door opens');
+});
+
+check('a door does not close while the player stands in it', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await page.evaluate(() => window.__debug.teleportPlayer(376, 72));
+  await pressE(page);
+  assert.equal(await doorState(page), 'open');
+});
+
+check('a door does not close while a 173 stands in it', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, SLEEPY, DOOR_ROOM);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(360, 72);
+    window.__debug.setAim(Math.PI);
+    window.__debug.place173(0, 376, 88);
+  });
+  await pressE(page);
+  assert.equal(await doorState(page), 'open');
+});
+
+check('a 173 opens a closed door and walks through', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, DOOR_ROOM);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(100, 72);
+    window.__debug.setAim(Math.PI);
+    window.__debug.setDoor(0, 'closed');
+    window.__debug.place173(0, 440, 72);
+  });
+  await page.waitForFunction(
+    () => {
+      const s = window.__debug.state();
+      return s.doors[0].state === 'open' && s.scp173[0].x < 23 * 16;
+    },
+    null,
+    { timeout: 4000 },
+  );
+});
+
+// 12x5: a 1-tile door at (9,2) and the final exit at (11,2); standing at (168,40) both are 16px away.
+const EXIT_BY_DOOR = ['############', '#@........K#', '#........D.X', '#..........#', '############'];
+
+check('with the card key near the final exit, E opens the exit instead of a door', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, EXIT_BY_DOOR);
+  await page.evaluate(() => {
+    window.__debug.teleportPlayer(168, 40);
+    window.__debug.giveKey();
+  });
+  await pressE(page);
+  const s = await state(page);
+  assert.deepEqual([s.mode, s.doors[0].state], ['escaped', 'open']);
+});
+
+check('without the card key the same E closes the door instead', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, EXIT_BY_DOOR);
+  await page.evaluate(() => window.__debug.teleportPlayer(168, 40));
+  await pressE(page);
+  const s = await state(page);
+  assert.deepEqual([s.mode, s.doors[0].state], ['playing', 'closed']);
 });
 
 (async () => {

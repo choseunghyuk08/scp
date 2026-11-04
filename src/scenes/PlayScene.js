@@ -2,6 +2,7 @@ import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE
 import { playBeep } from '../audio/beep.js';
 import { createBlink, isBlinking, stepBlink } from '../logic/blink.js';
 import { createDoublePress } from '../logic/confirm.js';
+import { createDoors, cycleDoor, isBlocking, nearestDoor, occupies, openDoor, withDoors } from '../logic/doors.js';
 import { tileCenter, tileOf } from '../logic/grid.js';
 import { parseMap } from '../logic/map.js';
 import { buildZone } from '../logic/mapgen.js';
@@ -12,6 +13,7 @@ import { create173, isLethal, step173 } from '../logic/scp173.js';
 import { createStamina, canRun, stepStamina } from '../logic/stamina.js';
 import { clampDt } from '../logic/time.js';
 import { canSee, visibilityPolygon } from '../logic/vision.js';
+import { drawDoors } from '../render/doors.js';
 import { FogOverlay } from '../render/fog.js';
 import { bootRun, clearRun, getStorage, saveRun } from '../save.js';
 import { debugEnabled, installDebug } from '../debug.js';
@@ -25,6 +27,7 @@ const COLORS = {
   scp173: 0xd8d0a8,
   key: 0xf0d040,
 };
+const SCP173_RADIUS = 5; // drawn as a 10x10 square
 const FONT = '"Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif';
 let generationCounter = 0;
 const randomSeed = () => Math.floor(Math.random() * 2 ** 32);
@@ -65,7 +68,10 @@ export class PlayScene extends Phaser.Scene {
       this.activation = activationFor(this.spec);
       saveRun(this.run, this.storage); // checkpoint: entering a zone
     }
-    this.grid = this.map.grid.map((row) => [...row]);
+    // baseGrid: walls and the exit/gate; every door is passable (monsters path on it). grid: baseGrid with closed and
+    // locked doors walled off (player movement and sight). Only refreshGrid() rebuilds grid.
+    this.baseGrid = this.map.grid.map((row) => [...row]);
+    this.doors = createDoors(this.map.doors);
     this.player = { ...this.map.playerStart };
     this.facing = 0;
     this.pointerMoved = false;
@@ -78,7 +84,8 @@ export class PlayScene extends Phaser.Scene {
     // Every zone but the last ends in a gate to the next zone. The card-key zone's gate stays locked until the key is
     // picked up, so nobody reaches the final locked exit without it. The last zone keeps the card-key exit.
     this.gateOpen = Boolean(this.spec && !this.spec.isFinal && (!this.spec.hasKey || this.hasKey));
-    if (this.gateOpen) this.grid[this.map.exit.ty][this.map.exit.tx] = false;
+    if (this.gateOpen) this.baseGrid[this.map.exit.ty][this.map.exit.tx] = false;
+    this.refreshGrid();
     this.radio = createRadio(this.run ? this.run.heard : []);
     this.shownLine = null;
     this.mode = 'playing';
@@ -86,6 +93,8 @@ export class PlayScene extends Phaser.Scene {
     this.debugView = false;
 
     this.drawMap();
+    // Doors sit above the fog so a closed door can be told from a locked one (walls stay under it).
+    this.doorGfx = this.add.graphics().setDepth(1000.5);
     this.keyGfx = this.add.graphics().setDepth(4);
     if (this.map.cardKey && !this.hasKey) {
       this.keyGfx.fillStyle(COLORS.key, 1).fillRect(this.map.cardKey.x - 3, this.map.cardKey.y - 3, 6, 6);
@@ -201,8 +210,9 @@ export class PlayScene extends Phaser.Scene {
     const blinking = isBlinking(this.blink);
     this.observed = this.scp.map((s) => !blinking && canSee(this.grid, this.player, this.facing, s.pos));
     this.scp = this.scp.map((s, i) =>
-      step173(s, { dt, grid: this.grid, player: this.player, observed: this.observed[i], activation: this.activation }),
+      step173(s, { dt, grid: this.baseGrid, player: this.player, observed: this.observed[i], activation: this.activation }),
     );
+    this.open173Doors();
 
     const now = this.nowMs();
     if (this.observed.some(Boolean)) this.radio.fire('seen173', now);
@@ -220,6 +230,35 @@ export class PlayScene extends Phaser.Scene {
     this.render();
   }
 
+  refreshGrid() {
+    this.grid = withDoors(this.baseGrid, this.doors);
+  }
+
+  /** A 173 paths straight through doors; whatever blocking door its square overlaps swings open. */
+  open173Doors() {
+    const actors = this.scp.map((s) => ({ pos: s.pos, radius: SCP173_RADIUS }));
+    let changed = false;
+    this.doors = this.doors.map((door) => {
+      if (!isBlocking(door) || !occupies(door, actors)) return door;
+      changed = true;
+      return openDoor(door);
+    });
+    if (changed) this.refreshGrid();
+  }
+
+  /** Everyone whose body can stand in a doorway and keep its door from closing. */
+  doorActors() {
+    return [
+      { pos: this.player, radius: PLAYER.radius },
+      ...this.scp.map((s) => ({ pos: s.pos, radius: SCP173_RADIUS })),
+    ];
+  }
+
+  setDoorState(id, next) {
+    this.doors = this.doors.map((d) => (d.id === id ? next : d));
+    this.refreshGrid();
+  }
+
   pickUpKey() {
     this.hasKey = true;
     this.keyGfx.clear();
@@ -231,21 +270,40 @@ export class PlayScene extends Phaser.Scene {
   openGate() {
     const { tx, ty } = this.map.exit;
     this.gateOpen = true;
-    this.grid[ty][tx] = false;
+    this.baseGrid[ty][tx] = false;
+    this.refreshGrid();
     this.exitGfx.clear().fillStyle(COLORS.gate, 1).fillRect(tx * TILE, ty * TILE, TILE, TILE);
   }
 
+  /**
+   * E: holding the card key next to the final exit escapes, even with a door in reach. Otherwise E works the nearest
+   * door (open -> closed -> locked -> open); with no door in reach, E at a locked exit only gets the noKey line.
+   * Zone gates are walked through, never opened with E.
+   */
   tryInteract() {
-    if (this.mode !== 'playing' || this.gateOpen) return;
-    const door = tileCenter(this.map.exit.tx, this.map.exit.ty);
-    if (Math.hypot(door.x - this.player.x, door.y - this.player.y) > EXIT_INTERACT_DIST) return;
-    if (!this.hasKey) {
-      this.radio.fire('noKey', this.nowMs());
+    if (this.mode !== 'playing') return;
+    const exitPos = tileCenter(this.map.exit.tx, this.map.exit.ty);
+    const nearExit = !this.gateOpen && Math.hypot(exitPos.x - this.player.x, exitPos.y - this.player.y) <= EXIT_INTERACT_DIST;
+    const finalExit = !this.spec || this.spec.isFinal;
+    if (nearExit && this.hasKey && finalExit) {
+      this.escape();
       return;
     }
-    if (this.spec && !this.spec.isFinal) return; // zone gates are walked through, never opened with E
+    const door = nearestDoor(this.doors, this.player);
+    if (door) {
+      const next = cycleDoor(door, occupies(door, this.doorActors()));
+      if (next === door) return;
+      this.setDoorState(door.id, next);
+      playBeep(next.state === 'open' ? 520 : 260, 60);
+      return;
+    }
+    if (nearExit && !this.hasKey) this.radio.fire('noKey', this.nowMs());
+  }
+
+  escape() {
     const { tx, ty } = this.map.exit;
-    this.grid[ty][tx] = false;
+    this.baseGrid[ty][tx] = false;
+    this.refreshGrid();
     this.exitGfx.clear().fillStyle(COLORS.floor, 1).fillRect(tx * TILE, ty * TILE, TILE, TILE);
     this.mode = 'escaped';
     playBeep(660, 300);
@@ -301,8 +359,11 @@ export class PlayScene extends Phaser.Scene {
     // 173 is drawn only while the player is actually looking at it, or once it has killed them.
     this.scpGfx.clear();
     this.scp.forEach((s, i) => {
-      if (this.observed[i] || this.mode === 'dead' || this.debugView) this.scpGfx.fillStyle(COLORS.scp173, 1).fillRect(s.pos.x - 5, s.pos.y - 5, 10, 10);
+      if (this.observed[i] || this.mode === 'dead' || this.debugView) {
+        this.scpGfx.fillStyle(COLORS.scp173, 1).fillRect(s.pos.x - SCP173_RADIUS, s.pos.y - SCP173_RADIUS, 10, 10);
+      }
     });
+    drawDoors(this.doorGfx, this.doors, []);
 
     this.fog.draw(visibilityPolygon(this.grid, this.player, this.facing), cam, isBlinking(this.blink));
     this.renderHud();
