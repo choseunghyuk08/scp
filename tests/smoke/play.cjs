@@ -600,6 +600,99 @@ check('Space and E during the fade do nothing', async (page, baseUrl) => {
   assert.notEqual(s.radio, lines.noKey);
 });
 
+check('a single R does not erase progress; a second R within 3s starts a new run', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 7777);
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await waitZone(page, 1);
+  const gen = (await state(page)).generation;
+  await page.keyboard.press('r');
+  await sleep(150);
+  let s = await state(page);
+  assert.deepEqual([s.run.seed, s.run.zone, s.rArmed, s.generation], [7777, 1, true, gen], 'one R only arms');
+  assert.equal((await savedRun(page)).zone, 1);
+  await page.keyboard.press('r');
+  await waitNextScene(page, gen);
+  await sleep(100);
+  s = await state(page);
+  assert.deepEqual([s.run.zone, s.run.attempt, s.rArmed], [0, 0, false]);
+  assert.notEqual(s.run.seed, 7777);
+  assert.equal((await savedRun(page)).seed, s.run.seed);
+});
+
+check('R in legacy rows mode does nothing', async (page, baseUrl) => {
+  await openRoom(page, baseUrl);
+  const gen = (await state(page)).generation;
+  await page.keyboard.press('r');
+  await page.keyboard.press('r');
+  await sleep(200);
+  const s = await state(page);
+  assert.deepEqual([s.run, s.rArmed, s.generation], [null, false, gen]);
+});
+
+check('garbage ?seed values fall back to a valid run without errors', async (page, baseUrl) => {
+  for (const bad of ['abc', '-5', '1e9', '99999999999', '', '12.5']) {
+    await page.goto(`${baseUrl}/index.html?debug=1`);
+    await page.waitForFunction(() => window.__debug, null, { timeout: 5000 });
+    await page.evaluate(() => localStorage.clear());
+    await page.goto(`${baseUrl}/index.html?debug=1&seed=${encodeURIComponent(bad)}`);
+    await page.waitForFunction(() => window.__debug?.state().run, null, { timeout: 5000 });
+    const { run } = await state(page);
+    assert.ok(Number.isInteger(run.seed) && run.seed >= 0 && run.seed <= 4294967295, `seed=${bad} -> ${run.seed}`);
+    assert.equal(run.zone, 0);
+  }
+});
+
+check('the game plays with localStorage unavailable', async (page, baseUrl) => {
+  const ctx = await page.context().browser().newContext({ viewport: { width: 960, height: 540 } });
+  const errors = [];
+  try {
+    const p = await ctx.newPage();
+    p.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+    p.on('pageerror', (e) => errors.push(e.message));
+    await p.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        get() {
+          throw new DOMException('blocked', 'SecurityError');
+        },
+      });
+    });
+    await p.goto(`${baseUrl}/index.html?debug=1&seed=8888`);
+    await p.waitForFunction(() => window.__debug?.state().run?.seed === 8888, null, { timeout: 5000 });
+    const st = () => p.evaluate(() => window.__debug.state());
+    const x0 = (await st()).player.x;
+    await p.keyboard.down('d');
+    await sleep(300);
+    await p.keyboard.up('d');
+    assert.notEqual((await st()).player.x, x0, 'the player can move');
+    await p.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await st()).map.exit));
+    await p.waitForFunction(() => window.__debug.state().run.zone === 1 && window.__debug.state().mode === 'playing', null, { timeout: 3000 });
+    await p.evaluate(() => {
+      const { x, y } = window.__debug.state().player;
+      window.__debug.setAim(Math.PI);
+      window.__debug.place173(0, x, y);
+    });
+    await p.waitForFunction(() => window.__debug.state().mode === 'dead', null, { timeout: 2000 });
+    await p.keyboard.press('Space');
+    await p.waitForFunction(() => window.__debug.state().run.attempt === 1, null, { timeout: 3000 });
+    assert.deepEqual(errors, []);
+  } finally {
+    await ctx.close();
+  }
+});
+
+check('M toggles the debug view with the seed, zone, and attempt text', async (page, baseUrl) => {
+  await openRun(page, baseUrl, 9999);
+  await page.keyboard.press('m');
+  await sleep(100);
+  let s = await state(page);
+  assert.deepEqual([s.debugView, s.debugText], [true, '시드 9999 · 구역 1/4 · 시도 0']);
+  await page.keyboard.press('m');
+  await sleep(100);
+  s = await state(page);
+  assert.equal(s.debugView, false);
+});
+
 (async () => {
   let failed = 0;
   const only = process.env.SMOKE_ONLY;

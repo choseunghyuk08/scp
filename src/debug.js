@@ -9,9 +9,13 @@ function mapHash(map) {
   return h;
 }
 
+export function debugEnabled() {
+  return new URLSearchParams(location.search).get('debug') === '1';
+}
+
 /** Test hooks for the Playwright smoke checks. Only installed with ?debug=1. */
 export function installDebug(scene) {
-  if (new URLSearchParams(location.search).get('debug') !== '1') return;
+  if (!debugEnabled()) return;
 
   window.__debug = {
     state: () => ({
@@ -38,6 +42,9 @@ export function installDebug(scene) {
         spawns173: scene.map.spawns173,
         hash: mapHash(scene.map),
       },
+      rArmed: scene.rPress.isArmed(scene.nowMs()),
+      debugView: scene.debugView,
+      debugText: scene.debugView ? scene.debugLabel() : '',
       zone: scene.zoneInfo
         ? { usedFallback: scene.zoneInfo.usedFallback, tries: scene.zoneInfo.tries, rooms: scene.zoneInfo.rooms }
         : null,

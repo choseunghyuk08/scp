@@ -1,6 +1,7 @@
-import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS } from '../config.js';
+import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS } from '../config.js';
 import { playBeep } from '../audio/beep.js';
 import { createBlink, isBlinking, stepBlink } from '../logic/blink.js';
+import { createDoublePress } from '../logic/confirm.js';
 import { tileCenter, tileOf } from '../logic/grid.js';
 import { parseMap } from '../logic/map.js';
 import { buildZone } from '../logic/mapgen.js';
@@ -13,7 +14,7 @@ import { clampDt } from '../logic/time.js';
 import { canSee, visibilityPolygon } from '../logic/vision.js';
 import { FogOverlay } from '../render/fog.js';
 import { bootRun, clearRun, getStorage, saveRun } from '../save.js';
-import { installDebug } from '../debug.js';
+import { debugEnabled, installDebug } from '../debug.js';
 
 const COLORS = {
   floor: 0x3a3a46,
@@ -71,6 +72,8 @@ export class PlayScene extends Phaser.Scene {
     this.radio = createRadio(this.run ? this.run.heard : []);
     this.shownLine = null;
     this.mode = 'playing';
+    this.rPress = createDoublePress(R_CONFIRM_MS);
+    this.debugView = false;
 
     this.drawMap();
     this.keyGfx = this.add.graphics().setDepth(4);
@@ -93,6 +96,8 @@ export class PlayScene extends Phaser.Scene {
       else if (this.mode === 'escaped') this.startNewRun();
     });
     this.input.keyboard.on('keydown-E', () => this.tryInteract());
+    this.input.keyboard.on('keydown-R', () => this.onNewRunKey());
+    if (debugEnabled()) this.input.keyboard.on('keydown-M', () => this.toggleDebugView());
     // Phaser releases held keys itself when the window loses focus; the smoke check "blur releases keys" guards that.
 
     this.radio.fire('start', this.nowMs());
@@ -121,6 +126,31 @@ export class PlayScene extends Phaser.Scene {
     const run = createRun(randomSeed());
     saveRun(run, this.storage);
     this.scene.restart({ run });
+  }
+
+  /** R twice within R_CONFIRM_MS throws the run away; a single press only shows the warning. */
+  onNewRunKey() {
+    if (!this.run || this.mode === 'transition') return;
+    if (this.rPress.press(this.nowMs()) === 'confirmed') {
+      this.startNewRun();
+      return;
+    }
+    this.rText.setVisible(true);
+    this.time.delayedCall(R_CONFIRM_MS + 50, () => this.rText.setVisible(this.rPress.isArmed(this.nowMs())));
+  }
+
+  /** Debug only: fog off, every 173 drawn, and the seed/zone/attempt in the corner. */
+  toggleDebugView() {
+    this.debugView = !this.debugView;
+    this.fog.image.setVisible(!this.debugView);
+    this.debugText.setText(this.debugLabel()).setVisible(this.debugView);
+    this.render();
+  }
+
+  debugLabel() {
+    if (!this.run) return '고정 맵';
+    const fallback = this.zoneInfo.usedFallback ? ' · 폴백' : '';
+    return `시드 ${this.run.seed} · 구역 ${this.run.zone + 1}/${ZONE_COUNT} · 시도 ${this.run.attempt}${fallback}`;
   }
 
   beginTransition() {
@@ -252,7 +282,7 @@ export class PlayScene extends Phaser.Scene {
     // 173 is drawn only while the player is actually looking at it, or once it has killed them.
     this.scpGfx.clear();
     this.scp.forEach((s, i) => {
-      if (this.observed[i] || this.mode === 'dead') this.scpGfx.fillStyle(COLORS.scp173, 1).fillRect(s.pos.x - 5, s.pos.y - 5, 10, 10);
+      if (this.observed[i] || this.mode === 'dead' || this.debugView) this.scpGfx.fillStyle(COLORS.scp173, 1).fillRect(s.pos.x - 5, s.pos.y - 5, 10, 10);
     });
 
     this.fog.draw(visibilityPolygon(this.grid, this.player, this.facing), cam, isBlinking(this.blink));
@@ -272,6 +302,23 @@ export class PlayScene extends Phaser.Scene {
         .setScrollFactor(0)
         .setDepth(2001);
     }
+    this.rText = this.add
+      .text(VIEW_W / 2, VIEW_H - 40, 'R을 한 번 더 누르면 새 판 (진행 삭제)', {
+        fontFamily: FONT,
+        fontSize: '11px',
+        color: '#ffb040',
+        backgroundColor: '#000000',
+        padding: { x: 4, y: 2 },
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(2002)
+      .setVisible(false);
+    this.debugText = this.add
+      .text(8, 22, '', { fontFamily: FONT, fontSize: '10px', color: '#80e0ff', backgroundColor: '#000000' })
+      .setScrollFactor(0)
+      .setDepth(2002)
+      .setVisible(false);
     this.keyText = this.add
       .text(VIEW_W - 8, 8, '[카드키]', { fontFamily: FONT, fontSize: '10px', color: '#f0d040' })
       .setOrigin(1, 0)
