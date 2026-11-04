@@ -321,11 +321,7 @@ export class PlayScene extends Phaser.Scene {
   breakingBars() {
     return this.s096
       .filter((s) => s.breaking)
-      .map((s) => {
-        const door = this.doors.find((d) => d.id === s.breaking.doorId);
-        const total = SCP096.breakSeconds[door?.state] ?? 1;
-        return { doorId: s.breaking.doorId, progress: 1 - s.breaking.left / total };
-      });
+      .map((s) => ({ doorId: s.breaking.doorId, progress: 1 - s.breaking.left / SCP096.breakSeconds[s.breaking.state] }));
   }
 
   setDoorState(id, next) {

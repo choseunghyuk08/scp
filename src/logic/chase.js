@@ -3,7 +3,8 @@ import { tileCenter, tileOf } from './grid.js';
 
 /**
  * Moves up to `budget` pixels along the BFS path from pos to target: through tile centres, then onto the target
- * itself. Stops in front of the first path tile for which `blocked(tile)` is true and reports it. When the path is
+ * itself. Stops in front of the first path tile for which `blocked(tile)` is true, and reports that tile only once
+ * the mover has arrived in front of it (a door further down the path is not its problem yet). When the path is
  * longer than `maxTiles` it does not move at all.
  */
 export function chaseStep(pos, target, grid, budget, blocked = () => false, maxTiles = Infinity) {
@@ -12,10 +13,13 @@ export function chaseStep(pos, target, grid, budget, blocked = () => false, maxT
   if (path.length > maxTiles) return { pos: { ...pos }, reachable: true, blockedTile: null };
 
   const stop = path.findIndex(blocked);
+  const here = { tx: tileOf(pos.x), ty: tileOf(pos.y) };
   const waypoints =
     stop === -1
       ? [...path.slice(0, -1).map((t) => tileCenter(t.tx, t.ty)), target]
-      : path.slice(0, stop).map((t) => tileCenter(t.tx, t.ty));
+      : stop === 0
+        ? [tileCenter(here.tx, here.ty)] // already next to it: settle in the middle of this tile
+        : path.slice(0, stop).map((t) => tileCenter(t.tx, t.ty));
   let { x, y } = pos;
   let left = budget;
   for (const wp of waypoints) {
@@ -31,5 +35,7 @@ export function chaseStep(pos, target, grid, budget, blocked = () => false, maxT
       left = 0;
     }
   }
-  return { pos: { x, y }, reachable: true, blockedTile: stop === -1 ? null : path[stop] };
+  const last = waypoints[waypoints.length - 1];
+  const arrived = stop !== -1 && x === last.x && y === last.y;
+  return { pos: { x, y }, reachable: true, blockedTile: arrived ? path[stop] : null };
 }

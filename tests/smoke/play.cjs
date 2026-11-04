@@ -870,8 +870,10 @@ async function rageAtDoor(page, doorStateName, playerX = 200) {
     [doorStateName, playerX],
   );
   await waitFor(page, () => window.__debug.state().scp096[0].breaking !== null);
-  const startLeft = (await s096(page)).breaking;
-  return { startLeft, startedAt: nowS() };
+  const m = await s096(page);
+  // It breaks from the tile in front of the door (tile 24, centre 392), never from where it stood.
+  assert.ok(Math.abs(m.x - 392) < 1 && Math.abs(m.y - 72) < 1, `breaking from (${m.x}, ${m.y})`);
+  return { startLeft: m.breaking, startedAt: nowS() };
 }
 
 check('seeing the 096 face from the front starts the rage; from behind it stays idle', async (page, baseUrl) => {

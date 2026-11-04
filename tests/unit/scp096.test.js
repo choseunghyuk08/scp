@@ -84,6 +84,30 @@ test('a closed door holds a raging 096 for 3s, then it breaks', () => {
   assert.ok(r.s.pos.x <= tileCenter(4, 1).x, 'waited in front of the door');
 });
 
+test('a raging 096 runs all the way to a distant closed door before it starts breaking it', () => {
+  const doors = [{ ...createDoors([[{ tx: 15, ty: 1 }]])[0], state: 'closed' }];
+  let s = rage(create096(tileCenter(1, 1), 0));
+  let t = 0;
+  while (!s.breaking && t < 5) {
+    s = step096(s, { dt: DT, navGrid: corridor(20), doors, player: tileCenter(19, 1), seen: false }).s;
+    t += DT;
+  }
+  assert.deepEqual(s.pos, tileCenter(14, 1), 'breaking starts on the tile in front of the door');
+  assert.ok(t >= (13 * 16) / SCP096.speed - DT, `started breaking after ${t.toFixed(2)}s`);
+});
+
+test('locking a closed door the 096 is already breaking restarts the wait at 6s', () => {
+  let doors = [{ ...createDoors([[{ tx: 5, ty: 1 }]])[0], state: 'closed' }];
+  const step = (s) => step096(s, { dt: DT, navGrid: corridor(20), doors, player: tileCenter(15, 1), seen: false });
+  let s = step(rage(create096(tileCenter(4, 1), 0))).s;
+  assert.ok(s.breaking && s.breaking.left === 3);
+  for (let i = 0; i < 50; i++) s = step(s).s; // 2.5s into the 3s
+  doors = [{ ...doors[0], state: 'locked' }];
+  s = step(s).s;
+  assert.ok(Math.abs(s.breaking.left - 6) < 1e-9, `left ${s.breaking.left} after locking`);
+  assert.equal(s.breaking.state, 'locked');
+});
+
 test('a locked door holds it for 6s', () => {
   const doors = [{ ...createDoors([[{ tx: 5, ty: 1 }]])[0], state: 'locked' }];
   const r = simulate(rage(create096(tileCenter(2, 1), 0)), {

@@ -5,7 +5,8 @@ import { tileOf } from './grid.js';
 import { findPath } from './pathfinding.js';
 import { canSee } from './vision.js';
 
-// Scp096State = { pos, home, homeFacing, facing, mode: 'idle' | 'rage' | 'returning', breaking: null | { doorId, left } }
+// Scp096State = { pos, home, homeFacing, facing, mode: 'idle' | 'rage' | 'returning',
+//   breaking: null | { doorId, state: the door state the wait is for, left: seconds } }
 
 const tileOfPoint = (p) => ({ tx: tileOf(p.x), ty: tileOf(p.y) });
 const angleDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
@@ -29,7 +30,8 @@ function enrage(s, player) {
 
 /**
  * idle: waits until its face is seen. rage: chases on the door-ignoring navGrid, stopping to break any closed (3s)
- * or locked (6s) door in the way; getting calmTiles away from a locked door it is breaking calms it.
+ * or locked (6s) door in the way once it reaches it; locking a closed door it is breaking restarts the wait at 6s.
+ * Getting calmTiles away from a locked door it is breaking calms it.
  * returning: walks home, opening doors in its way, and sits down facing its home direction.
  * Door changes are reported as events ({doorId, kind: 'broken' | 'opened'}) for the caller to apply.
  */
@@ -51,6 +53,10 @@ export function step096(s, { dt, navGrid, doors, player, seen }) {
   if (s.breaking) {
     const door = doors.find((d) => d.id === s.breaking.doorId);
     if (!door || !isBlocking(door)) return { s: { ...s, breaking: null }, events };
+    if (door.state !== s.breaking.state) {
+      const breaking = { ...s.breaking, state: door.state, left: SCP096.breakSeconds[door.state] };
+      return { s: { ...s, breaking }, events };
+    }
     if (door.state === 'locked') {
       const path = findPath(navGrid, door.tiles[0], tileOfPoint(player));
       if (path === null || path.length >= SCP096.calmTiles) return { s: { ...s, mode: 'returning', breaking: null }, events };
@@ -71,7 +77,7 @@ export function step096(s, { dt, navGrid, doors, player, seen }) {
   const next = { ...s, pos: step.pos, facing: heading(s.pos, step.pos, s.facing) };
   if (step.blockedTile) {
     const door = doorAtTile(doors, step.blockedTile);
-    next.breaking = { doorId: door.id, left: SCP096.breakSeconds[door.state] };
+    next.breaking = { doorId: door.id, state: door.state, left: SCP096.breakSeconds[door.state] };
   }
   return { s: next, events };
 }
