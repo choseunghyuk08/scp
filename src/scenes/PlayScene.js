@@ -483,7 +483,7 @@ export class PlayScene extends Phaser.Scene {
     this.mode = 'escaped';
     playBeep(660, 300);
     if (!this.run) {
-      this.showBanner('탈출 성공 — v0.3 끝. Space로 새 판', '#80ff80');
+      this.showBanner('탈출 성공 — v0.4 끝. Space로 새 판', '#80ff80');
       return;
     }
     // The last zone's order is judged here; the ending follows from every zone's outcome (D80). The finished run is
