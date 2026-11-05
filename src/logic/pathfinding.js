@@ -40,3 +40,29 @@ function rebuild(cameFrom, key, to, from) {
   }
   return path.reverse();
 }
+
+/** BFS step counts from the nearest of `sources` over floor tiles, flat-indexed by ty * cols + tx; -1 = unreachable. */
+export function distanceFrom(grid, sources) {
+  const rows = grid.length;
+  const cols = grid[0].length;
+  const dist = new Int32Array(rows * cols).fill(-1);
+  const queue = [];
+  for (const { tx, ty } of sources) {
+    if (isSolid(grid, tx, ty) || dist[ty * cols + tx] === 0) continue;
+    dist[ty * cols + tx] = 0;
+    queue.push(ty * cols + tx);
+  }
+  for (let head = 0; head < queue.length; head++) {
+    const i = queue[head];
+    const x = i % cols;
+    const y = (i - x) / cols;
+    for (const { dx, dy } of NEIGHBORS) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (isSolid(grid, nx, ny) || dist[ny * cols + nx] !== -1) continue;
+      dist[ny * cols + nx] = dist[i] + 1;
+      queue.push(ny * cols + nx);
+    }
+  }
+  return dist;
+}

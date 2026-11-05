@@ -1,11 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ZONE_COUNT } from '../../src/config.js';
+import { SIDE_ROOM, ZONE_COUNT } from '../../src/config.js';
+import { tileOf } from '../../src/logic/grid.js';
+import { parseMap } from '../../src/logic/map.js';
+import { buildZone } from '../../src/logic/mapgen.js';
+import { findPath } from '../../src/logic/pathfinding.js';
+import { zoneSpec } from '../../src/logic/run.js';
 import {
   directionTo,
   FALSE_RULES,
   instructionLine,
   instructionPlan,
+  instructionReach,
   ITEM_NAMES,
   outcomeFor,
   TRUE_RULES,
@@ -63,3 +69,36 @@ test('directionTo picks the dominant axis with screen-up as north (ties go east/
 
 test('outcomeFor: no instruction is none, otherwise followed or refused', () =>
   assert.deepEqual([outcomeFor(null, true), outcomeFor(ins, true), outcomeFor(ins, false)], ['none', 'followed', 'refused']));
+
+/** Start -> card key -> exit along shortest paths (exit tile opened), the walk every player has to make. */
+function route(map) {
+  const open = map.grid.map((row) => [...row]);
+  open[map.exit.ty][map.exit.tx] = false;
+  const t = (p) => ({ tx: tileOf(p.x), ty: tileOf(p.y) });
+  const stops = [t(map.playerStart), ...(map.cardKey ? [t(map.cardKey)] : []), map.exit];
+  const tiles = [stops[0]];
+  for (let i = 1; i < stops.length; i++) tiles.push(...findPath(open, stops[i - 1], stops[i]));
+  return tiles;
+}
+
+test('instructionReach measures path tiles to the side-room door and keeps at least SIDE_ROOM.warnTiles', () => {
+  const m = parseMap(['########', '#@.#,,a#', '#K.D,,,#', '#..X####', '########']);
+  const r = instructionReach(m);
+  assert.equal(r.reach, SIDE_ROOM.warnTiles);
+  assert.deepEqual([r.field[2 * r.cols + 3], r.field[2 * r.cols + 2], r.field[1 * r.cols + 1]], [0, 1, 3]);
+  assert.equal(instructionReach(parseMap(['#####', '#@KX#', '#####'])), null);
+});
+
+test('the start -> key -> exit route always comes within the instruction reach (review: 31% of zones never heard it)', () => {
+  const silent = [];
+  for (let seed = 0; seed < 200; seed++) {
+    for (let z = 0; z < ZONE_COUNT; z++) {
+      const { map } = buildZone(seed, zoneSpec(seed, z), 0);
+      const { field, cols, reach } = instructionReach(map);
+      const nearest = Math.min(...route(map).map((p) => field[p.ty * cols + p.tx]).filter((d) => d >= 0));
+      if (nearest > reach) silent.push(`seed ${seed} zone ${z}: ${nearest} > ${reach}`);
+      assert.ok(reach <= Math.max(SIDE_ROOM.warnTiles, nearest + 2), 'reach no larger than needed');
+    }
+  }
+  assert.deepEqual(silent.slice(0, 5), [], `${silent.length} of 800 zones never trigger on the route`);
+});

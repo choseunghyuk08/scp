@@ -1,9 +1,9 @@
-import { FONT, TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS, SCP096, ITEMS, SIDE_ROOM } from '../config.js';
+import { FONT, TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS, SCP096, ITEMS } from '../config.js';
 import { playBeep } from '../audio/beep.js';
 import { createBlink, isBlinking, stepBlink } from '../logic/blink.js';
 import { createDoublePress } from '../logic/confirm.js';
 import { pickEnding } from '../logic/endings.js';
-import { directionTo, instructionLine, instructionPlan, outcomeFor } from '../logic/instructions.js';
+import { directionTo, instructionLine, instructionPlan, instructionReach, outcomeFor } from '../logic/instructions.js';
 import { addItem, applyEyedrops, createItems, useItem } from '../logic/items.js';
 import { createTrap, stepTrap, trapView } from '../logic/trap.js';
 import { breakDoor, createDoors, cycleDoor, isBlocking, nearestDoor, occupies, openDoor, withDoors } from '../logic/doors.js';
@@ -100,6 +100,7 @@ export class PlayScene extends Phaser.Scene {
     const side = this.map.sideRoom;
     this.instruction = side ? (this.spec ? this.spec.instruction : (data.instruction ?? null)) : null;
     this.sideTiles = new Set((side?.tiles ?? []).map((t) => `${t.tx},${t.ty}`));
+    this.instructionReach = this.instruction ? instructionReach(this.map) : null;
     this.told = false;
     this.followed = false;
     this.trap = null;
@@ -310,18 +311,16 @@ export class PlayScene extends Phaser.Scene {
     playBeep(60, 300, 0.08);
   }
 
-  /** The instruction plays once per attempt, the first time the player is within SIDE_ROOM.warnTiles of the door. */
+  /**
+   * The instruction plays once per attempt, the first time the player is within reach of the side-room door: 12 path
+   * tiles, or as close as the start -> key -> exit route ever gets (D92).
+   */
   tellInstruction(now) {
     if (!this.instruction || this.told) return;
+    const { field, cols, reach } = this.instructionReach;
+    const d = field[tileOf(this.player.y) * cols + tileOf(this.player.x)];
+    if (d < 0 || d > reach) return;
     const side = this.map.sideRoom;
-    const targets = side.doorId === null ? side.tiles : this.map.doors[side.doorId];
-    const from = { tx: tileOf(this.player.x), ty: tileOf(this.player.y) };
-    const near = targets.some((t) => {
-      if (Math.abs(t.tx - from.tx) + Math.abs(t.ty - from.ty) > SIDE_ROOM.warnTiles) return false;
-      const path = findPath(this.baseGrid, from, t);
-      return path !== null && path.length <= SIDE_ROOM.warnTiles;
-    });
-    if (!near) return;
     this.told = true;
     this.radio.fire('instruction', now, instructionLine(this.instruction, directionTo(this.player, side.center)));
   }
@@ -612,7 +611,7 @@ export class PlayScene extends Phaser.Scene {
       .setDepth(2002)
       .setVisible(false);
     this.itemText = this.add
-      .text(160, VIEW_H - 25, '', { fontFamily: FONT, fontSize: '8px', color: '#b0b0c0' })
+      .text(160, VIEW_H - 25, '', { fontFamily: FONT, fontSize: '8px', color: '#b0b0c0' }) // keys shown: no manual in-game
       .setScrollFactor(0)
       .setDepth(2001);
     this.keyText = this.add
@@ -646,7 +645,7 @@ export class PlayScene extends Phaser.Scene {
     bar(8, VIEW_H - 14, this.stamina.value, this.stamina.exhausted ? 0xc04040 : 0x60c060);
     bar(84, VIEW_H - 14, this.blink.gauge, this.blink.gauge >= 0.8 ? 0xe0c040 : 0x8080e0);
     this.keyText.setVisible(this.hasKey);
-    this.itemText.setText(`안약 ${this.items.eyedrops} · 각성제 ${this.items.stim}`);
+    this.itemText.setText(`안약(Q) ${this.items.eyedrops} · 각성제(F) ${this.items.stim}`);
 
     const line = this.radio.current(this.nowMs());
     if (line !== this.shownLine) {

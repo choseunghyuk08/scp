@@ -1276,6 +1276,42 @@ check('the ending screen never shows the trust score', async (page, baseUrl) => 
   assert.ok(screen.texts.every((t) => !t.includes('%') && !t.includes('신뢰')), JSON.stringify(screen.texts));
 });
 
+// ---- v0.4 final-review fixes ----
+
+// A tile as far from the side-room door as the route's nearest approach (> 12): the old fixed 12-tile trigger never fired there.
+check('an instruction whose side room is far from the route still plays on the route', async (page, baseUrl) => {
+  const { buildZone } = await import('../../src/logic/mapgen.js');
+  const { zoneSpec } = await import('../../src/logic/run.js');
+  const { instructionReach } = await instr();
+  let found = null;
+  for (let seed = 0; !found && seed < 200; seed++) {
+    const { map } = buildZone(seed, zoneSpec(seed, 1), 0);
+    const r = instructionReach(map);
+    const start = Math.floor(map.playerStart.y / 16) * r.cols + Math.floor(map.playerStart.x / 16);
+    if (r.reach > 14 && r.field[start] > r.reach) {
+      // the route tile closest to the side-room door
+      let best = null;
+      for (let i = 0; i < r.field.length; i++) {
+        if (r.field[i] === r.reach - 2 && (!best || i < best)) best = i;
+      }
+      found = { seed, reach: r.reach, tile: { tx: best % r.cols, ty: Math.floor(best / r.cols) } };
+    }
+  }
+  assert.ok(found, 'no zone with a far side room in 200 seeds');
+  await openRun(page, baseUrl, found.seed);
+  await startRun(page, { seed: found.seed, zone: 1, attempt: 0, hasKey: true, heard: [] });
+  assert.equal((await state(page)).instruction.told, false);
+  await page.evaluate(({ tx, ty }) => window.__debug.teleportPlayer(tx * 16 + 8, ty * 16 + 8), found.tile);
+  await waitFor(page, () => window.__debug.state().instruction.told, null, 1000);
+});
+
+check('the HUD names the item keys', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, SIDE_ROOM);
+  await page.evaluate(() => window.__debug.giveItem('stim'));
+  await sleep(100);
+  assert.equal(await page.evaluate(() => window.__game.scene.getScene('Play').itemText.text), '안약(Q) 0 · 각성제(F) 1');
+});
+
 (async () => {
   let failed = 0;
   const only = process.env.SMOKE_ONLY;
