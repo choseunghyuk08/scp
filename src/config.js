@@ -1,6 +1,7 @@
 export const TILE = 16;
 export const VIEW_W = 480;
 export const VIEW_H = 270;
+export const FONT = '"Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif';
 
 export const PLAYER = { radius: 5, walkSpeed: 48, runSpeed: 80 };
 export const VISION = { halfAngle: (35 * Math.PI) / 180, range: 128, rayCount: 48 };

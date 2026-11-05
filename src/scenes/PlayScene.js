@@ -1,8 +1,9 @@
-import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS, SCP096, ITEMS, SIDE_ROOM } from '../config.js';
+import { FONT, TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS, SCP096, ITEMS, SIDE_ROOM } from '../config.js';
 import { playBeep } from '../audio/beep.js';
 import { createBlink, isBlinking, stepBlink } from '../logic/blink.js';
 import { createDoublePress } from '../logic/confirm.js';
-import { directionTo, instructionLine, outcomeFor } from '../logic/instructions.js';
+import { pickEnding } from '../logic/endings.js';
+import { directionTo, instructionLine, instructionPlan, outcomeFor } from '../logic/instructions.js';
 import { addItem, applyEyedrops, createItems, useItem } from '../logic/items.js';
 import { createTrap, stepTrap, trapView } from '../logic/trap.js';
 import { breakDoor, createDoors, cycleDoor, isBlocking, nearestDoor, occupies, openDoor, withDoors } from '../logic/doors.js';
@@ -20,7 +21,7 @@ import { clampDt } from '../logic/time.js';
 import { canSee, visibilityPolygon } from '../logic/vision.js';
 import { drawDoors } from '../render/doors.js';
 import { FogOverlay } from '../render/fog.js';
-import { bootRun, clearRun, getStorage, saveRun } from '../save.js';
+import { bootRun, clearRun, getStorage, saveEnding, saveRun } from '../save.js';
 import { debugEnabled, installDebug } from '../debug.js';
 
 const COLORS = {
@@ -41,7 +42,6 @@ const COLORS = {
 const SCP173_RADIUS = 5; // drawn as a 10x10 square
 const SCP096_RADIUS = 5; // body 10x12, but it blocks a doorway like a 173
 const RAGE_BEEP_S = 0.5;
-const FONT = '"Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif';
 let generationCounter = 0;
 const randomSeed = () => Math.floor(Math.random() * 2 ** 32);
 
@@ -142,7 +142,7 @@ export class PlayScene extends Phaser.Scene {
     // are removed on shutdown and restarts never stack listeners.
     this.input.keyboard.on('keydown-SPACE', () => {
       if (this.mode === 'dead') this.restartAfterDeath();
-      else if (this.mode === 'escaped') this.startNewRun();
+      else if (this.mode === 'escaped' && !this.run) this.startNewRun(); // a run goes on to the ending screen
     });
     this.input.keyboard.on('keydown-E', () => this.tryInteract());
     this.input.keyboard.on('keydown-Q', () => this.useItemKey('eyedrops'));
@@ -482,7 +482,21 @@ export class PlayScene extends Phaser.Scene {
     this.exitGfx.clear().fillStyle(COLORS.floor, 1).fillRect(tx * TILE, ty * TILE, TILE, TILE);
     this.mode = 'escaped';
     playBeep(660, 300);
-    this.showBanner('탈출 성공 — v0.3 끝. Space로 새 판', '#80ff80');
+    if (!this.run) {
+      this.showBanner('탈출 성공 — v0.3 끝. Space로 새 판', '#80ff80');
+      return;
+    }
+    // The last zone's order is judged here; the ending follows from every zone's outcome (D80). The finished run is
+    // cleared now, so a reload on the ending screen starts fresh instead of replaying the last zone.
+    const run = recordZone(
+      { ...this.run, hasKey: this.hasKey, heard: this.radio.heardEvents() },
+      { outcome: outcomeFor(this.instruction, this.followed), items: this.items },
+    );
+    const endingId = pickEnding(run.outcomes, instructionPlan(run.seed));
+    const seen = saveEnding(endingId, this.storage);
+    clearRun(this.storage);
+    this.cameras.main.fadeOut(TRANSITION_MS, 0, 0, 0);
+    this.time.delayedCall(TRANSITION_MS, () => this.scene.start('Ending', { endingId, seen }));
   }
 
   die() {

@@ -1,5 +1,6 @@
 import { VIEW_W, VIEW_H } from './config.js';
 import { unlockAudio } from './audio/beep.js';
+import { EndingScene } from './scenes/EndingScene.js';
 import { PlayScene } from './scenes/PlayScene.js';
 
 const game = new Phaser.Game({
@@ -10,7 +11,7 @@ const game = new Phaser.Game({
   backgroundColor: '#000000',
   pixelArt: true,
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [PlayScene],
+  scene: [PlayScene, EndingScene],
 });
 
 // Audio can only start from a user gesture.

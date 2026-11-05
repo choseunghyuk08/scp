@@ -462,6 +462,16 @@ check('legacy rows mode still has no run and the v0.1 exit rules', async (page, 
 
 const tileMid = (t) => ({ x: t.tx * 16 + 8, y: t.ty * 16 + 8 });
 const savedRun = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('gaze.run.v1') ?? 'null'));
+/** From the ending screen, Space starts a new run in zone 0 of a fresh Play scene. */
+async function leaveEnding(page) {
+  await page.keyboard.press('Space');
+  await page.waitForFunction(
+    () => window.__game.scene.isActive('Play') && !window.__game.scene.isActive('Ending') && window.__debug.state().run?.zone === 0,
+    null,
+    { timeout: 3000 },
+  );
+  await sleep(100);
+}
 const waitZone = (page, zone, timeout = 3000) =>
   page.waitForFunction((z) => { const s = window.__debug.state(); return s.run?.zone === z && s.mode === 'playing'; }, zone, { timeout });
 const waitNextScene = async (page, gen) => page.waitForFunction((g) => window.__debug.state().generation > g, gen, { timeout: 3000 });
@@ -564,8 +574,8 @@ check('escaping starts a fresh run and clears the old checkpoint', async (page, 
   await startRun(page, { seed: 4444, zone: 3, attempt: 0, hasKey: true, heard: [] });
   await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
   await page.keyboard.press('e');
-  await page.waitForFunction(() => window.__debug.state().mode === 'escaped', null, { timeout: 2000 });
-  await respawn(page);
+  await page.waitForFunction(() => window.__game.scene.isActive('Ending'), null, { timeout: 3000 });
+  await leaveEnding(page);
   const s = await state(page);
   assert.deepEqual([s.run.zone, s.run.attempt, s.mode], [0, 0, 'playing']);
   assert.notEqual(s.run.seed, 4444);
@@ -1200,6 +1210,70 @@ check('items and the outcome are saved at the gate; dying before the gate loses 
   const saved = await savedRun(page);
   assert.deepEqual([saved.outcomes, saved.items], [['none', 'followed'], { eyedrops: 1, stim: 0 }]);
   assert.deepEqual((await state(page)).items, { eyedrops: 1, stim: 0 });
+});
+
+// ---- v0.4 endings ----
+
+const ENDING_SEED = 4444;
+const endingScreen = (page) =>
+  page.evaluate(() => {
+    const sc = window.__game.scene.getScene('Ending');
+    return { id: sc.endingId, seen: sc.seen, texts: sc.children.list.filter((o) => o.type === 'Text').map((o) => o.text) };
+  });
+
+/** Zone 4 with zones 1-3 already judged as v[0..2] and zone 4's own order as v[3]; escape and read the ending screen. */
+async function reachEnding(page, v) {
+  await startRun(page, { seed: ENDING_SEED, zone: 3, attempt: 0, hasKey: true, heard: [], items: { eyedrops: 0, stim: 0 }, outcomes: v.slice(0, 3) });
+  await page.evaluate((f) => window.__debug.setFollowed(f), v[3] === 'followed');
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await page.keyboard.press('e');
+  await page.waitForFunction(() => window.__game.scene.isActive('Ending'), null, { timeout: 3000 });
+  return endingScreen(page);
+}
+
+async function endingVectors() {
+  const plan = (await instr()).instructionPlan(ENDING_SEED);
+  const firstLie = plan.findIndex((p) => !p.truthful);
+  return {
+    discern: plan.map((p) => (p.truthful ? 'followed' : 'refused')),
+    alone: plan.map(() => 'refused'),
+    half: plan.map((_, i) => (i === 0 || i === firstLie ? 'followed' : 'refused')),
+    faithful: plan.map(() => 'followed'),
+  };
+}
+
+check('each of the four endings appears on the ending screen', async (page, baseUrl) => {
+  const { ENDINGS } = await import('../../src/logic/endings.js');
+  for (const [target, v] of Object.entries(await endingVectors())) {
+    await openRun(page, baseUrl, ENDING_SEED);
+    const screen = await reachEnding(page, v);
+    assert.equal(screen.id, target);
+    assert.ok(screen.texts.includes(ENDINGS[target].name), JSON.stringify(screen.texts));
+    for (const line of ENDINGS[target].lines) assert.ok(screen.texts.includes(line), line);
+    assert.ok(screen.texts.includes('Space로 새 판'));
+  }
+});
+
+check('seen endings are listed and survive a new run', async (page, baseUrl) => {
+  const v = await endingVectors();
+  await openRun(page, baseUrl, ENDING_SEED);
+  let screen = await reachEnding(page, v.alone);
+  assert.ok(screen.texts.includes('본 엔딩 1/4'), JSON.stringify(screen.texts));
+  await leaveEnding(page);
+  screen = await reachEnding(page, v.faithful);
+  assert.deepEqual(screen.seen, ['alone', 'faithful']);
+  assert.ok(screen.texts.includes('본 엔딩 2/4'));
+  assert.ok(screen.texts.some((t) => t.includes('???') && t.includes('혼자 걷다') && t.includes('충실한 D급')), JSON.stringify(screen.texts));
+  await leaveEnding(page);
+  assert.equal((await savedRun(page)).zone, 0);
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('gaze.endings.v1'))), ['alone', 'faithful']);
+});
+
+check('the ending screen never shows the trust score', async (page, baseUrl) => {
+  const v = await endingVectors();
+  await openRun(page, baseUrl, ENDING_SEED);
+  const screen = await reachEnding(page, v.half);
+  assert.ok(screen.texts.every((t) => !t.includes('%') && !t.includes('신뢰')), JSON.stringify(screen.texts));
 });
 
 (async () => {
