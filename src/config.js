@@ -32,6 +32,9 @@ export const SPAWN_KEY_MIN_TILES = 5;
 export const TRANSITION_MS = 400;
 export const R_CONFIRM_MS = 3000;
 
+// v0.4 side rooms (D84): interior size, straight corridor length, and the instruction trigger distance (D83).
+// The corridor is at least 3 long so its two doorways (anchor side, side-room side) never touch and merge.
+export const SIDE_ROOM = { minW: 5, maxW: 7, minH: 4, maxH: 5, corridor: [3, 8], warnTiles: 12 };
 // v0.4 items and the false side room's trap (D77, D78). Flashes stay at most 3 per second (spec §12).
 export const ITEMS = { pickupDist: 10, stimSeconds: 5 };
 export const TRAP = { lockSeconds: 8, darkSeconds: 1.5, flashes: [[0.3, 0.42], [0.9, 1.02]] };

@@ -5,7 +5,7 @@ import { parseMap } from './map.js';
 import { createRng, hashSeed, randInt, shuffle } from './rng.js';
 import { hasLineOfSight } from './vision.js';
 import { findPath } from './pathfinding.js';
-import { findDoorways, layoutZone } from './zonelayout.js';
+import { carveSideRoom, findDoorways, layoutZone } from './zonelayout.js';
 
 // ZoneBuild = { map: ParsedMap, info: { zoneIndex, tries, usedFallback, rooms, pathLength } }.
 
@@ -19,6 +19,64 @@ const ARROW = new Map([[0, '>'], [Math.PI / 2, 'v'], [Math.PI, '<'], [-Math.PI /
 const angleDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
 
 const tileOfPoint = (p) => ({ tx: tileOf(p.x), ty: tileOf(p.y) });
+const ITEM_CHAR = { eyedrops: 'a', stim: 'g' };
+const key = (t) => `${t.tx},${t.ty}`;
+
+/**
+ * Every floor tile behind the side-room door: the room itself plus anything standing in it. The fill starts from the
+ * side-room tiles touching that door, so a stray item tile elsewhere on the map does not drag the main rooms in.
+ */
+function sideRegion(map) {
+  const doorTiles = map.doors[map.sideRoom.doorId];
+  const door = new Set(doorTiles.map(key));
+  const touchesDoor = (t) => doorTiles.some((d) => Math.abs(d.tx - t.tx) + Math.abs(d.ty - t.ty) === 1);
+  const region = new Set();
+  const stack = map.sideRoom.tiles.filter(touchesDoor);
+  while (stack.length) {
+    const t = stack.pop();
+    const k = key(t);
+    if (region.has(k) || door.has(k) || map.grid[t.ty]?.[t.tx] !== false) continue;
+    region.add(k);
+    for (const [dx, dy] of DIRS) stack.push({ tx: t.tx + dx, ty: t.ty + dy });
+  }
+  return region;
+}
+
+/** Side-room rules (D84): it exists, has a door, is reachable, holds nothing but the promised item, and no 173 is near. */
+function inspectSideRoom(map, spec, open, fromStart, problems) {
+  const at = (field, t) => field[t.ty * map.cols + t.tx];
+  if (!map.sideRoom) {
+    problems.push('side room missing');
+    return;
+  }
+  const { tiles, doorId } = map.sideRoom;
+  if (tiles.every((t) => at(fromStart, t) < 0)) problems.push('side room unreachable');
+  map.spawns173.forEach((s, i) => {
+    const field = distanceField(open, tileOf(s.x), tileOf(s.y));
+    const d = Math.min(...tiles.map((t) => at(field, t)).filter((v) => v >= 0));
+    if (d < SPAWN_GAP) problems.push(`scp173 ${i} only ${d} path tiles from the side room`);
+  });
+  if (doorId === null) {
+    problems.push('side room has no door');
+    return;
+  }
+  const region = sideRegion(map);
+  const inside = (p) => region.has(key(tileOfPoint(p)));
+  if (inside(map.playerStart)) problems.push('player start inside the side room');
+  if (map.cardKey && inside(map.cardKey)) problems.push('card key inside the side room');
+  map.spawns173.forEach((s, i) => inside(s) && problems.push(`scp173 ${i} inside the side room`));
+  map.spawns096.forEach(({ pos }, i) => inside(pos) && problems.push(`scp096 ${i} inside the side room`));
+  const kept = map.items.filter((it) => inside(it.pos));
+  for (const it of map.items) if (!inside(it.pos)) problems.push('item outside the side room');
+  const { truthful, item } = spec.instruction;
+  if (truthful) {
+    const n = kept.filter((it) => it.kind === item).length;
+    if (n !== 1) problems.push(`expected 1 ${item} in the side room, found ${n}`);
+    for (const it of kept) if (it.kind !== item) problems.push(`unexpected ${it.kind} in the side room`);
+  } else if (kept.length) {
+    problems.push(`expected no item in the side room, found ${kept.length}`);
+  }
+}
 const centerTile = (r) => ({ tx: r.x + Math.floor(r.w / 2), ty: r.y + Math.floor(r.h / 2) });
 
 /** BFS step counts from (tx, ty) over floor tiles, flat-indexed by ty * cols + tx; -1 = unreachable. */
@@ -108,6 +166,8 @@ function inspect(map, spec) {
     });
   });
 
+  if (spec.instruction) inspectSideRoom(map, spec, open, fromStart, problems);
+
   map.spawns173.forEach((s, i) => {
     const d = at(fromStart, tileOfPoint(s));
     if (d < 0) problems.push(`spawn ${i} unreachable from the start`);
@@ -162,7 +222,12 @@ function pickDoor(rng, grid, room) {
 }
 
 function tryBuild(rng, spec) {
-  const { grid, rooms, edges } = layoutZone(rng, { cols: ZONE_COLS, rows: ZONE_ROWS, roomCount: spec.roomCount });
+  const layout = layoutZone(rng, { cols: ZONE_COLS, rows: ZONE_ROWS, roomCount: spec.roomCount });
+  const { rooms, edges } = layout;
+  // v0.4: every zone with an instruction gets a dead-end side room; it is never an entrance/exit/key/monster room.
+  const side = spec.instruction ? carveSideRoom(rng, layout) : null;
+  if (spec.instruction && !side) return null;
+  const grid = side ? side.grid : layout.grid;
   const idx = (t) => t.ty * ZONE_COLS + t.tx;
   const anchors = rooms.map((r) => nearestFloor(grid, r));
   if (anchors.some((a) => !a)) return null;
@@ -204,8 +269,16 @@ function tryBuild(rng, spec) {
     key = spots[randInt(rng, 0, spots.length - 1)];
   }
 
-  const doorways = findDoorways(grid, rooms);
+  const doorways = findDoorways(grid, side ? [...rooms, side.room] : rooms);
   const startPoint = tileCenter(start.tx, start.ty);
+  // Every way into the side room passes its doorway, so a 173 far enough from one door tile is far from the room.
+  let sideField = null;
+  if (side) {
+    const touches = (t) => DIRS.some(([dx, dy]) => inRoom(side.room, t.tx + dx, t.ty + dy));
+    const sideDoor = doorways.find((g) => g.some(touches));
+    if (!sideDoor) return null;
+    sideField = distanceField(open, sideDoor[0].tx, sideDoor[0].ty);
+  }
 
   // SCP-096 goes in first: a spare room on the way (not entrance, exit or card-key room), near its centre, hidden
   // from the start. It sits facing at least 90 degrees away from the doorway the shortest route arrives through.
@@ -245,6 +318,7 @@ function tryBuild(rng, spec) {
       if (fromStart[idx(t)] < SPAWN_MIN_PATH) continue;
       if (key && Math.hypot(t.tx - key.tx, t.ty - key.ty) < SPAWN_KEY_MIN_TILES) continue;
       if (fields096.some((field) => field[idx(t)] < SPAWN_GAP)) continue;
+      if (sideField && sideField[idx(t)] < SPAWN_GAP) continue;
       if (hasLineOfSight(grid, startPoint, tileCenter(t.tx, t.ty))) continue;
       candidates.push(t);
     }
@@ -261,6 +335,11 @@ function tryBuild(rng, spec) {
   if (spawns.length < spec.scp173Count) return null;
 
   const chars = grid.map((row) => row.map((wall) => (wall ? '#' : '.')));
+  if (side) {
+    const r = side.room;
+    for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) chars[y][x] = ',';
+    if (spec.instruction.truthful) chars[r.y + Math.floor(r.h / 2)][r.x + Math.floor(r.w / 2)] = ITEM_CHAR[spec.instruction.item];
+  }
   chars[start.ty][start.tx] = '@';
   chars[door.ty][door.tx] = 'X';
   if (key) chars[key.ty][key.tx] = 'K';

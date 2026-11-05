@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ZONE_COLS, ZONE_ROWS } from '../../src/config.js';
+import { SIDE_ROOM, ZONE_COLS, ZONE_ROWS } from '../../src/config.js';
 import { createRng } from '../../src/logic/rng.js';
-import { findDoorways, layoutZone } from '../../src/logic/zonelayout.js';
+import { carveSideRoom, findDoorways, layoutZone } from '../../src/logic/zonelayout.js';
 
 const P = (roomCount) => ({ cols: ZONE_COLS, rows: ZONE_ROWS, roomCount });
 const cases = [];
@@ -139,4 +139,77 @@ test('at least 97% of rooms have a doorway (corridors meet rooms head-on instead
     }
   }
   assert.ok(missing / rooms <= 0.03, `${missing} of ${rooms} rooms have no doorway`);
+});
+
+// ---- v0.4 side rooms ----
+const carved = layouts
+  .map((L) => ({ L, side: carveSideRoom(createRng(L.seed * 31 + L.roomCount), L) }))
+  .filter(({ side }) => side !== null);
+const inRect = (r, x, y) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+
+test('side room constants', () =>
+  assert.deepEqual(SIDE_ROOM, { minW: 5, maxW: 7, minH: 4, maxH: 5, corridor: [3, 8], warnTiles: 12 }));
+
+test('carveSideRoom finds room in most zone layouts', () => assert.ok(carved.length >= layouts.length * 0.5, `${carved.length}`));
+
+test('carveSideRoom adds one dead-end room 5..7 x 4..5 inside the border', () => {
+  for (const { L, side } of carved) {
+    const { room } = side;
+    assert.ok(room.w >= 5 && room.w <= 7 && room.h >= 4 && room.h <= 5, JSON.stringify(room));
+    assert.ok(room.x >= 1 && room.y >= 1 && room.x + room.w <= ZONE_COLS - 1 && room.y + room.h <= ZONE_ROWS - 1);
+    for (let y = room.y; y < room.y + room.h; y++) for (let x = room.x; x < room.x + room.w; x++) assert.equal(side.grid[y][x], false);
+    assert.ok(L.rooms.every((r) => !(r.x < room.x + room.w + 1 && room.x < r.x + r.w + 1 && r.y < room.y + room.h + 1 && room.y < r.y + r.h + 1)));
+  }
+});
+
+test('the side room hangs off one chain room by a straight 2-wide corridor of 3..8 tiles touching no other floor', () => {
+  for (const { L, side } of carved) {
+    const { room, anchor } = side;
+    const A = L.rooms[anchor];
+    const changed = [];
+    for (let y = 0; y < ZONE_ROWS; y++) {
+      for (let x = 0; x < ZONE_COLS; x++) {
+        if (side.grid[y][x] !== L.grid[y][x]) {
+          assert.equal(L.grid[y][x], true, 'only walls are carved');
+          changed.push({ x, y });
+        }
+      }
+    }
+    const corridor = changed.filter((c) => !inRect(room, c.x, c.y));
+    const xs = new Set(corridor.map((c) => c.x));
+    const ys = new Set(corridor.map((c) => c.y));
+    const len = corridor.length / 2;
+    assert.ok((xs.size === 2 && ys.size === len) || (ys.size === 2 && xs.size === len), 'a straight 2-wide corridor');
+    assert.ok(len >= 3 && len <= 8, `length ${len}`);
+    // Flood fill from the side room without entering the anchor room reaches only the side room and the corridor.
+    const seen = new Set();
+    const stack = [{ x: room.x, y: room.y }];
+    while (stack.length) {
+      const { x, y } = stack.pop();
+      const k = `${x},${y}`;
+      if (seen.has(k) || side.grid[y]?.[x] !== false || inRect(A, x, y)) continue;
+      seen.add(k);
+      stack.push({ x: x + 1, y }, { x: x - 1, y }, { x, y: y + 1 }, { x, y: y - 1 });
+    }
+    assert.equal(seen.size, changed.length, 'no other floor touches the side room or its corridor');
+  }
+});
+
+test('the side room gets a 2-tile doorway', () => {
+  for (const { L, side } of carved) {
+    const { room } = side;
+    const groups = findDoorways(side.grid, [...L.rooms, room]);
+    const touching = groups.filter((g) => g.some((t) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => inRect(room, t.tx + dx, t.ty + dy))));
+    assert.equal(touching.length, 1);
+    assert.equal(touching[0].length, 2);
+  }
+});
+
+test('carveSideRoom does not mutate and returns null when there is no space', () => {
+  const L = layouts[0];
+  const before = JSON.stringify(L.grid);
+  carveSideRoom(createRng(1), L);
+  assert.equal(JSON.stringify(L.grid), before);
+  const tiny = Array.from({ length: 10 }, (_, y) => Array.from({ length: 12 }, (_, x) => x === 0 || y === 0 || x === 11 || y === 9));
+  assert.equal(carveSideRoom(createRng(1), { grid: tiny, rooms: [{ x: 1, y: 1, w: 10, h: 8 }] }), null);
 });

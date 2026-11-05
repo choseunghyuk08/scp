@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MAX_GEN_ATTEMPTS, SPAWN_KEY_MIN_TILES, SPAWN_MIN_PATH, ZONE_COUNT } from '../../src/config.js';
+import { TRUE_RULES } from '../../src/logic/instructions.js';
 import { tileOf } from '../../src/logic/grid.js';
 import { parseMap } from '../../src/logic/map.js';
 import { buildZone, fallbackZone, validateZoneMap } from '../../src/logic/mapgen.js';
@@ -233,4 +234,82 @@ test('doors are written at room entrances and start open', () => {
       }
     }
   }
+});
+
+// ---- v0.4 side rooms ----
+// BASE with a side room under the left room: corridor (3..4, 8), door (3..4, 9), room x 2..6, y 10..11.
+const SIDE_MAP = [
+  '################################',
+  '#@.........#.................S.#',
+  '#..........#...................#',
+  '#..........#...................#',
+  '#..........#...................#',
+  '#..........#...................#',
+  '#..............................#',
+  '#..........#...............K...X',
+  '###..###########################',
+  '###DD###########################',
+  '##,,,,,#########################',
+  '##,,a,,#########################',
+  '################################',
+];
+const SPEC_SIDE = { ...SPEC, instruction: { truthful: true, item: 'eyedrops', rule: TRUE_RULES[0] } };
+const has = (list, re) => list.some((p) => re.test(p));
+
+test('validateZoneMap accepts a hand-made map with a valid side room', () => assert.deepEqual(problems(SIDE_MAP, SPEC_SIDE), []));
+
+test('validateZoneMap reports a 173 within 29 path tiles of the side room', () => {
+  const near = edit(SIDE_MAP, [{ x: 29, y: 1, ch: '.' }, { x: 21, y: 3, ch: 'S' }]);
+  assert.ok(has(problems(near, SPEC_SIDE), /scp173 0 only \d+ path tiles from the side room/), problems(near, SPEC_SIDE).join('; '));
+});
+
+test('validateZoneMap reports a missing side room, a missing door, or something inside it', () => {
+  assert.ok(has(problems(BASE, SPEC_SIDE), /^side room missing$/));
+  assert.ok(has(problems(edit(SIDE_MAP, [{ x: 3, y: 9, ch: '.' }, { x: 4, y: 9, ch: '.' }]), SPEC_SIDE), /^side room has no door$/));
+  const keyInside = edit(SIDE_MAP, [{ x: 27, y: 7, ch: '.' }, { x: 5, y: 10, ch: 'K' }]);
+  assert.ok(has(problems(keyInside, SPEC_SIDE), /^card key inside the side room$/));
+});
+
+test('validateZoneMap reports a wrong or misplaced item', () => {
+  assert.ok(has(problems(edit(SIDE_MAP, [{ x: 4, y: 11, ch: 'g' }]), SPEC_SIDE), /expected 1 eyedrops in the side room, found 0/));
+  const lie = { ...SPEC_SIDE, instruction: { ...SPEC_SIDE.instruction, truthful: false } };
+  assert.ok(has(problems(SIDE_MAP, lie), /expected no item in the side room, found 1/));
+  assert.ok(has(problems(edit(SIDE_MAP, [{ x: 4, y: 11, ch: ',' }, { x: 5, y: 2, ch: 'a' }]), SPEC_SIDE), /^item outside the side room$/));
+});
+
+test('generated zones have a side room with a door, nothing inside but the promised item', () => {
+  for (let seed = 0; seed < 30; seed++) {
+    for (let z = 0; z < ZONE_COUNT; z++) {
+      const spec = zoneSpec(seed, z);
+      const { map, info } = buildZone(seed, spec, 0);
+      assert.equal(info.usedFallback, false);
+      assert.ok(map.sideRoom && map.sideRoom.doorId !== null, `seed ${seed} zone ${z}`);
+      assert.deepEqual(validateZoneMap(map, spec), []);
+    }
+  }
+});
+
+test('a true instruction puts its item in the side room centre; a lie leaves the room empty', () => {
+  let truths = 0;
+  let lies = 0;
+  for (let seed = 0; seed < 30; seed++) {
+    for (let z = 0; z < ZONE_COUNT; z++) {
+      const spec = zoneSpec(seed, z);
+      const { map } = buildZone(seed, spec, 0);
+      if (spec.instruction.truthful) {
+        truths++;
+        assert.equal(map.items.length, 1);
+        assert.equal(map.items[0].kind, spec.instruction.item);
+        const tiles = map.sideRoom.tiles;
+        const xs = tiles.map((t) => t.tx);
+        const ys = tiles.map((t) => t.ty);
+        const centre = { tx: Math.min(...xs) + Math.floor((Math.max(...xs) - Math.min(...xs) + 1) / 2), ty: Math.min(...ys) + Math.floor((Math.max(...ys) - Math.min(...ys) + 1) / 2) };
+        assert.deepEqual(tileOfPoint(map.items[0].pos), centre);
+      } else {
+        lies++;
+        assert.deepEqual(map.items, []);
+      }
+    }
+  }
+  assert.ok(truths > 0 && lies > 0);
 });

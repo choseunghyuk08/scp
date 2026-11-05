@@ -1,3 +1,4 @@
+import { SIDE_ROOM } from '../config.js';
 import { randInt, shuffle } from './rng.js';
 
 // Rect = {x, y, w, h} in tiles. ZoneLayout = {grid, rooms, edges}: grid[ty][tx] true = wall,
@@ -204,4 +205,69 @@ export function findDoorways(grid, rooms) {
     }
   }
   return out;
+}
+
+const SIDE_ROOM_TRIES = 200;
+
+/**
+ * A dead-end side room (D84) carved into empty wall space next to one chain room, joined to it by a straight 2-wide
+ * corridor. Nothing within a tile of the new room or corridor is floor except the anchor room the corridor meets
+ * head-on, so the side room opens no shortcut. Returns a new grid (the input is untouched), or null when no spot fits.
+ */
+export function carveSideRoom(rng, { grid, rooms }) {
+  const rows = grid.length;
+  const cols = grid[0].length;
+  const interior = (x, y) => x >= 1 && y >= 1 && x <= cols - 2 && y <= rows - 2;
+  for (let n = 0; n < SIDE_ROOM_TRIES; n++) {
+    const anchor = randInt(rng, 0, rooms.length - 1);
+    const A = rooms[anchor];
+    const w = randInt(rng, SIDE_ROOM.minW, SIDE_ROOM.maxW);
+    const h = randInt(rng, SIDE_ROOM.minH, SIDE_ROOM.maxH);
+    const len = randInt(rng, SIDE_ROOM.corridor[0], SIDE_ROOM.corridor[1]);
+    const side = randInt(rng, 0, 3); // 0 east, 1 west, 2 south, 3 north
+    const horizontal = side < 2;
+    if ((horizontal ? A.h : A.w) < 2) continue;
+    // The corridor's two lanes lie inside the anchor's span on that side; the room covers both lanes.
+    const lane = horizontal ? randInt(rng, A.y, A.y + A.h - 2) : randInt(rng, A.x, A.x + A.w - 2);
+    const span = horizontal ? h : w;
+    const offset = randInt(rng, lane + 2 - span, lane);
+    let room;
+    const corridor = [];
+    if (horizontal) {
+      const x0 = side === 0 ? A.x + A.w : A.x - len;
+      room = { x: side === 0 ? x0 + len : x0 - w, y: offset, w, h };
+      for (let x = x0; x < x0 + len; x++) corridor.push({ x, y: lane }, { x, y: lane + 1 });
+    } else {
+      const y0 = side === 2 ? A.y + A.h : A.y - len;
+      room = { x: offset, y: side === 2 ? y0 + len : y0 - h, w, h };
+      for (let y = y0; y < y0 + len; y++) corridor.push({ x: lane, y }, { x: lane + 1, y });
+    }
+    if (!interior(room.x, room.y) || !interior(room.x + room.w - 1, room.y + room.h - 1)) continue;
+    // The room plus a one-tile margin must be solid wall today.
+    let free = true;
+    for (let y = room.y - 1; free && y <= room.y + room.h; y++) {
+      for (let x = room.x - 1; x <= room.x + room.w; x++) {
+        if (grid[y]?.[x] !== true) {
+          free = false;
+          break;
+        }
+      }
+    }
+    if (!free) continue;
+    const own = new Set(corridor.map((c) => `${c.x},${c.y}`));
+    const clean = corridor.every((c) => {
+      if (!interior(c.x, c.y) || grid[c.y][c.x] !== true) return false;
+      return DIRS.every(([dx, dy]) => {
+        const nx = c.x + dx;
+        const ny = c.y + dy;
+        return grid[ny]?.[nx] !== false || inRect(A, nx, ny) || own.has(`${nx},${ny}`);
+      });
+    });
+    if (!clean) continue;
+    const out = grid.map((row) => [...row]);
+    for (let y = room.y; y < room.y + room.h; y++) for (let x = room.x; x < room.x + room.w; x++) out[y][x] = false;
+    for (const c of corridor) out[c.y][c.x] = false;
+    return { grid: out, room, anchor };
+  }
+  return null;
 }
