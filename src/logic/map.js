@@ -1,9 +1,12 @@
 import { tileCenter } from './grid.js';
 
 // Legend: # wall, . floor, @ player start, K card key, X exit door (solid), S SCP-173 spawn,
-// D door tile (starts open, so floor), ^ > v < SCP-096 spawn facing up/right/down/left.
+// D door tile (starts open, so floor), ^ > v < SCP-096 spawn facing up/right/down/left,
+// , side-room floor, a / g eye drops / stimulant lying on side-room floor (v0.4).
 const FACING_096 = { '>': 0, v: Math.PI / 2, '<': Math.PI, '^': -Math.PI / 2 };
-const FLOOR_CHARS = new Set(['.', '@', 'K', 'S', 'D', ...Object.keys(FACING_096)]);
+const ITEM_CHARS = { a: 'eyedrops', g: 'stim' };
+const SIDE_CHARS = new Set([',', ...Object.keys(ITEM_CHARS)]);
+const FLOOR_CHARS = new Set(['.', '@', 'K', 'S', 'D', ...Object.keys(FACING_096), ...SIDE_CHARS]);
 
 /** Groups 4-connected door tiles into doors, ordered by each door's first tile in reading order. */
 function groupDoors(tiles) {
@@ -44,6 +47,8 @@ export function parseMap(rows, { requireKey = true } = {}) {
   const spawns173 = [];
   const spawns096 = [];
   const doorTiles = [];
+  const sideTiles = [];
+  const items = [];
   const grid = rows.map((row, ty) =>
     [...row].map((ch, tx) => {
       if (ch === '#') return true;
@@ -56,6 +61,8 @@ export function parseMap(rows, { requireKey = true } = {}) {
       if (ch === 'S') spawns173.push(tileCenter(tx, ty));
       if (ch === 'D') doorTiles.push({ tx, ty });
       if (ch in FACING_096) spawns096.push({ pos: tileCenter(tx, ty), facing: FACING_096[ch] });
+      if (SIDE_CHARS.has(ch)) sideTiles.push({ tx, ty });
+      if (ch in ITEM_CHARS) items.push({ kind: ITEM_CHARS[ch], pos: tileCenter(tx, ty) });
       return false;
     }),
   );
@@ -65,6 +72,7 @@ export function parseMap(rows, { requireKey = true } = {}) {
     const allowed = marker === 'K' && !requireKey ? count <= 1 : count === 1;
     if (!allowed) throw new Error(`map needs exactly one '${marker}'${marker === 'K' && !requireKey ? ' (or none)' : ''}, found ${count}`);
   }
+  const doors = groupDoors(doorTiles);
   const [start] = found['@'];
   const [key] = found.K;
   return {
@@ -75,7 +83,26 @@ export function parseMap(rows, { requireKey = true } = {}) {
     cardKey: key ? tileCenter(key.tx, key.ty) : null,
     exit: found.X[0],
     spawns173,
-    doors: groupDoors(doorTiles),
+    doors,
     spawns096,
+    sideRoom: sideRoomOf(sideTiles, doors),
+    items,
+  };
+}
+
+/** The side room: its tiles, their centre, and the first door touching any of them (null when none does). */
+function sideRoomOf(tiles, doors) {
+  if (tiles.length === 0) return null;
+  const centers = tiles.map((t) => tileCenter(t.tx, t.ty));
+  const touches = (d) =>
+    d.some((dt) => tiles.some((t) => Math.abs(t.tx - dt.tx) + Math.abs(t.ty - dt.ty) === 1));
+  const doorId = doors.findIndex(touches);
+  return {
+    tiles,
+    center: {
+      x: centers.reduce((sum, c) => sum + c.x, 0) / centers.length,
+      y: centers.reduce((sum, c) => sum + c.y, 0) / centers.length,
+    },
+    doorId: doorId === -1 ? null : doorId,
   };
 }

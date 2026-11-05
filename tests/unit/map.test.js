@@ -76,3 +76,25 @@ test('maps without doors or 096 report empty lists', () => {
   const m = parseMap(rows);
   assert.deepEqual([m.doors, m.spawns096], [[], []]);
 });
+
+const SIDE = ['########', '#@.#,,a#', '#K.D,,,#', '#..X####', '########'];
+
+test(', a g are side-room floor; the adjacent door is the side-room door', () => {
+  const m = parseMap(SIDE);
+  assert.equal(m.sideRoom.tiles.length, 6);
+  assert.deepEqual(m.sideRoom.tiles[0], { tx: 4, ty: 1 });
+  assert.deepEqual([m.sideRoom.doorId, m.sideRoom.center], [0, { x: 88, y: 32 }]);
+  assert.deepEqual(m.items, [{ kind: 'eyedrops', pos: { x: 104, y: 24 } }]);
+  assert.equal(m.grid[1][6], false);
+  assert.equal(m.grid[1][4], false);
+});
+
+test('g is a stimulant', () => assert.equal(parseMap(SIDE.map((r) => r.replace('a', 'g'))).items[0].kind, 'stim'));
+
+test('a map without side-room tiles has sideRoom null and no items', () => {
+  const m = parseMap(rows);
+  assert.deepEqual([m.sideRoom, m.items], [null, []]);
+});
+
+test('a side room with no door next to it has doorId null', () =>
+  assert.equal(parseMap(SIDE.map((r) => r.replace('D', '#'))).sideRoom.doorId, null));
