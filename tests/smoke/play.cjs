@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { withPage } = require('./helpers.cjs');
-const { OPEN_ROOM, DOOR_ROOM } = require('./rooms.cjs');
+const { OPEN_ROOM, DOOR_ROOM, SIDE_ROOM } = require('./rooms.cjs');
 
 const checks = [];
 function check(name, fn) {
@@ -1026,6 +1026,180 @@ check('173 and 096 in view together: 173 freezes and 096 rages', async (page, ba
   await waitFor(page, () => window.__debug.state().scp096[0].mode === 'rage', null, 1000);
   const s = await state(page);
   assert.deepEqual([s.scp173[0].visible, s.scp173[0].frozen], [true, true]);
+});
+
+// ---- v0.4 side rooms (SIDE_ROOM: door tiles (23,4),(23,5) centre (376,80); side room x 24..38 centre (504,72)) ----
+
+const instr = async () => import('../../src/logic/instructions.js');
+const SIDE_LIE = SIDE_ROOM.map((row) => row.replace('a', ','));
+const setRow = (rows, y, x, ch) => rows.map((row, i) => (i === y ? row.slice(0, x) + ch + row.slice(x + 1) : row));
+
+check('the instruction plays once within 12 path tiles of the side-room door and names its direction', async (page, baseUrl) => {
+  const { instructionLine, TRUE_RULES } = await instr();
+  const ins = { truthful: true, item: 'eyedrops', rule: TRUE_RULES[0] };
+  await openRoom(page, baseUrl, { instruction: ins }, SIDE_ROOM);
+  await resetRadio(page);
+  await sleep(200);
+  assert.deepEqual([(await state(page)).radio, (await state(page)).instruction.told], [null, false]);
+  await page.evaluate(() => window.__debug.teleportPlayer(200, 72)); // tile (12,4): 11 path tiles from the door
+  await sleep(150);
+  assert.equal((await state(page)).radio, instructionLine(ins, 'E'));
+  await page.evaluate(() => window.__debug.teleportPlayer(72, 72));
+  await waitFor(page, () => window.__debug.state().radio === null, null, 5000);
+  await page.evaluate(() => window.__debug.teleportPlayer(200, 72));
+  await sleep(150);
+  assert.equal((await state(page)).radio, null, 'the instruction played twice');
+});
+
+check('a side room next to the entrance tells right after the start line', async (page, baseUrl) => {
+  const lines = await radioLines();
+  const { instructionLine, TRUE_RULES } = await instr();
+  const ins = { truthful: true, item: 'eyedrops', rule: TRUE_RULES[1] };
+  const rows = setRow(setRow(SIDE_ROOM, 4, 4, '.'), 4, 20, '@');
+  await openRoom(page, baseUrl, { instruction: ins }, rows);
+  await sleep(150);
+  const s = await state(page);
+  assert.deepEqual([s.radio, s.instruction.told], [lines.start, true]);
+  await waitFor(page, (text) => window.__debug.state().radio === text, instructionLine(ins, 'E'), 5000);
+});
+
+check('walking into a true side room picks up the item and counts as followed', async (page, baseUrl) => {
+  const { TRUE_RULES } = await instr();
+  await openRoom(page, baseUrl, { instruction: { truthful: true, item: 'eyedrops', rule: TRUE_RULES[0] } }, SIDE_ROOM);
+  assert.deepEqual([(await state(page)).instruction.followed, (await state(page)).mapItems.length], [false, 1]);
+  await page.evaluate(() => window.__debug.teleportPlayer(440, 72));
+  await sleep(100);
+  assert.equal((await state(page)).instruction.followed, true);
+  await page.evaluate(() => window.__debug.teleportPlayer(486, 72));
+  await sleep(100);
+  const s = await state(page);
+  assert.deepEqual([s.items, s.mapItems.length, s.trap], [{ eyedrops: 1, stim: 0 }, 0, null]);
+});
+
+check('Q empties the blink gauge and F fills stamina with no drain for 5s', async (page, baseUrl) => {
+  await openRoom(page, baseUrl, {}, SIDE_ROOM);
+  await page.evaluate(() => {
+    window.__debug.giveItem('eyedrops');
+    window.__debug.giveItem('stim');
+    window.__debug.setBlinkGauge(0.7);
+  });
+  await page.keyboard.press('q');
+  await sleep(60);
+  let s = await state(page);
+  assert.ok(s.blink.gauge < 0.1, `gauge ${s.blink.gauge}`);
+  assert.deepEqual(s.items, { eyedrops: 0, stim: 1 });
+  await page.keyboard.down('Shift');
+  await page.keyboard.down('d');
+  await sleep(2000);
+  await page.keyboard.up('d');
+  const drained = (await state(page)).stamina.value;
+  assert.ok(drained < 0.7, `stamina ${drained}`);
+  await page.keyboard.press('f');
+  await sleep(60);
+  s = await state(page);
+  assert.deepEqual([s.stamina.value, s.items.stim], [1, 0]);
+  assert.ok(s.stimLeft > 4.5, `stimLeft ${s.stimLeft}`);
+  await page.keyboard.down('a');
+  await sleep(1000);
+  await page.keyboard.up('a');
+  await page.keyboard.up('Shift');
+  assert.equal((await state(page)).stamina.value, 1, 'running drained stamina during the stimulant');
+});
+
+check('a false side room locks its door for 8s, ignores E, blacks out, then opens', async (page, baseUrl) => {
+  const { FALSE_RULES } = await instr();
+  const lines = await radioLines();
+  await openRoom(page, baseUrl, { instruction: { truthful: false, item: 'stim', rule: FALSE_RULES[0] } }, SIDE_LIE);
+  await resetRadio(page);
+  await page.evaluate(() => {
+    window.__debug.setAim(0);
+    window.__debug.teleportPlayer(440, 72);
+  });
+  await waitFor(page, () => Boolean(window.__debug.state().trap), null, 1000);
+  let s = await state(page);
+  assert.deepEqual([s.doors[0].state, s.trap.dark, s.mapItems.length], ['locked', true, 0]);
+  const sx = Math.round(s.player.x - s.camera.scrollX);
+  const sy = Math.round(s.player.y - s.camera.scrollY);
+  const px = await pixel(page, sx + 60, sy);
+  assert.ok(px[0] + px[1] + px[2] < 15, `not black during the blackout: ${px}`);
+  await waitFor(page, (line) => window.__debug.state().radio === line, lines.trap, 5000);
+  await page.evaluate(() => window.__debug.teleportPlayer(395, 72)); // inside, within reach of the door
+  await pressE(page);
+  assert.equal(await doorState(page), 'locked', 'E opened the trapped door');
+  await waitFor(page, () => window.__debug.state().doors[0].state === 'open', null, 9000);
+  s = await state(page);
+  assert.equal(s.trap, null);
+  await pressE(page);
+  assert.equal(await doorState(page), 'closed', 'E works again after the trap');
+});
+
+check('the trap waits until nobody stands in the doorway', async (page, baseUrl) => {
+  const { FALSE_RULES } = await instr();
+  await openRoom(page, baseUrl, { instruction: { truthful: false, item: 'eyedrops', rule: FALSE_RULES[1] } }, SIDE_LIE);
+  await page.evaluate(() => window.__debug.teleportPlayer(388, 72)); // in the side room, body still over the door
+  await sleep(200);
+  let s = await state(page);
+  assert.deepEqual([s.instruction.followed, s.doors[0].state, s.trap], [true, 'open', null]);
+  await page.evaluate(() => window.__debug.teleportPlayer(400, 72));
+  await waitFor(page, () => window.__debug.state().doors[0].state === 'locked', null, 1000);
+});
+
+check('during the blackout an unseen 173 moves', async (page, baseUrl) => {
+  const { FALSE_RULES } = await instr();
+  await openRoom(page, baseUrl, { instruction: { truthful: false, item: 'stim', rule: FALSE_RULES[2] }, ...SLEEPY }, SIDE_LIE);
+  await page.evaluate(() => {
+    window.__debug.setAim(0);
+    window.__debug.teleportPlayer(388, 72); // in the side room but over the door, so the trap waits
+    window.__debug.place173(0, 500, 72);
+  });
+  await sleep(300);
+  let s = await state(page);
+  assert.deepEqual([s.trap, s.scp173[0].visible, s.scp173[0].x], [null, true, 500], 'seen and frozen before the trap');
+  await page.evaluate(() => window.__debug.teleportPlayer(400, 72));
+  await waitFor(page, () => Boolean(window.__debug.state().trap), null, 1000);
+  await waitFor(page, () => window.__debug.state().scp173[0].x < 495, null, 1000);
+});
+
+check('dying during the trap restarts the zone with the door open and no trap', async (page, baseUrl) => {
+  const { instructionPlan } = await instr();
+  let seed = 1;
+  while (instructionPlan(seed)[1].truthful) seed++;
+  await openRun(page, baseUrl, seed);
+  await startRun(page, { seed, zone: 1, attempt: 0, hasKey: true, heard: [] });
+  const c = (await state(page)).sideRoom.center;
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), c);
+  await waitFor(page, () => Boolean(window.__debug.state().trap), null, 1000);
+  await dieHere(page);
+  await respawn(page);
+  const s = await state(page);
+  assert.equal(s.run.attempt, 1);
+  // (told may already be true again: the entrance can be within 12 path tiles of the side-room door)
+  assert.deepEqual([s.trap, s.instruction.followed], [null, false]);
+  assert.ok(s.doors.every((d) => d.state === 'open'), JSON.stringify(s.doors));
+});
+
+check('items and the outcome are saved at the gate; dying before the gate loses them', async (page, baseUrl) => {
+  // Zone 1 (the tutorial's dormant 173 cannot kill): a seed whose zone-1 order is a true eye-drops one.
+  const { instructionPlan } = await instr();
+  let seed = 1;
+  while (!(instructionPlan(seed)[1].truthful && instructionPlan(seed)[1].item === 'eyedrops')) seed++;
+  await openRun(page, baseUrl, seed);
+  await startRun(page, { seed, zone: 1, attempt: 0, hasKey: true, heard: [] });
+  const toSide = async () => {
+    const [{ pos }] = (await state(page)).mapItems;
+    await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), pos);
+    await waitFor(page, () => window.__debug.state().items.eyedrops === 1, null, 1000);
+  };
+  await toSide();
+  await dieHere(page);
+  await respawn(page);
+  assert.deepEqual([(await state(page)).items, (await state(page)).instruction.followed], [{ eyedrops: 0, stim: 0 }, false]);
+  await toSide();
+  await page.evaluate(({ x, y }) => window.__debug.teleportPlayer(x, y), tileMid((await state(page)).map.exit));
+  await waitZone(page, 2);
+  const saved = await savedRun(page);
+  assert.deepEqual([saved.outcomes, saved.items], [['none', 'followed'], { eyedrops: 1, stim: 0 }]);
+  assert.deepEqual((await state(page)).items, { eyedrops: 1, stim: 0 });
 });
 
 (async () => {

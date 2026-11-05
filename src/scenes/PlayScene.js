@@ -1,7 +1,10 @@
-import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS, SCP096 } from '../config.js';
+import { TILE, VIEW_W, VIEW_H, PLAYER, KEY_PICKUP_DIST, EXIT_INTERACT_DIST, ZONE_COUNT, TRANSITION_MS, R_CONFIRM_MS, SCP096, ITEMS, SIDE_ROOM } from '../config.js';
 import { playBeep } from '../audio/beep.js';
 import { createBlink, isBlinking, stepBlink } from '../logic/blink.js';
 import { createDoublePress } from '../logic/confirm.js';
+import { directionTo, instructionLine, outcomeFor } from '../logic/instructions.js';
+import { addItem, applyEyedrops, createItems, useItem } from '../logic/items.js';
+import { createTrap, stepTrap, trapView } from '../logic/trap.js';
 import { breakDoor, createDoors, cycleDoor, isBlocking, nearestDoor, occupies, openDoor, withDoors } from '../logic/doors.js';
 import { tileCenter, tileOf } from '../logic/grid.js';
 import { parseMap } from '../logic/map.js';
@@ -9,10 +12,10 @@ import { buildZone } from '../logic/mapgen.js';
 import { moveWithCollision } from '../logic/movement.js';
 import { findPath } from '../logic/pathfinding.js';
 import { createRadio } from '../logic/radio.js';
-import { activationFor, advanceZone, createRun, registerDeath, zoneSpec } from '../logic/run.js';
+import { activationFor, advanceZone, createRun, recordZone, registerDeath, zoneSpec } from '../logic/run.js';
 import { create173, isLethal, step173 } from '../logic/scp173.js';
 import { create096, faceSeen, isLethal096, step096 } from '../logic/scp096.js';
-import { createStamina, canRun, stepStamina } from '../logic/stamina.js';
+import { createStamina, canRun, fillStamina, stepStamina } from '../logic/stamina.js';
 import { clampDt } from '../logic/time.js';
 import { canSee, visibilityPolygon } from '../logic/vision.js';
 import { drawDoors } from '../render/doors.js';
@@ -31,6 +34,9 @@ const COLORS = {
   scp096Face: 0x9090a0,
   scp096Rage: 0xe04040,
   key: 0xf0d040,
+  eyedrops: 0x60d0f0,
+  stim: 0xf09040,
+  scare: 0xe8e0c8,
 };
 const SCP173_RADIUS = 5; // drawn as a 10x10 square
 const SCP096_RADIUS = 5; // body 10x12, but it blocks a doorway like a 173
@@ -90,6 +96,18 @@ export class PlayScene extends Phaser.Scene {
     this.s096 = this.map.spawns096.map((sp) => create096(sp.pos, sp.facing));
     this.visible096 = this.s096.map(() => false);
     this.rageBeepIn = 0;
+    // v0.4: the zone's side-room instruction (none without a side room), items carried in, and the trap.
+    const side = this.map.sideRoom;
+    this.instruction = side ? (this.spec ? this.spec.instruction : (data.instruction ?? null)) : null;
+    this.sideTiles = new Set((side?.tiles ?? []).map((t) => `${t.tx},${t.ty}`));
+    this.told = false;
+    this.followed = false;
+    this.trap = null;
+    this.trapDone = false;
+    this.flashOn = false;
+    this.items = this.run ? { ...this.run.items } : createItems();
+    this.mapItems = this.map.items.map((it) => ({ ...it, pos: { ...it.pos } }));
+    this.stimLeft = 0;
     this.hasKey = this.run ? this.run.hasKey : false;
     // Every zone but the last ends in a gate to the next zone. The card-key zone's gate stays locked until the key is
     // picked up, so nobody reaches the final locked exit without it. The last zone keeps the card-key exit.
@@ -109,7 +127,9 @@ export class PlayScene extends Phaser.Scene {
     if (this.map.cardKey && !this.hasKey) {
       this.keyGfx.fillStyle(COLORS.key, 1).fillRect(this.map.cardKey.x - 3, this.map.cardKey.y - 3, 6, 6);
     }
+    this.itemGfx = this.add.graphics().setDepth(4);
     this.scpGfx = this.add.graphics().setDepth(5);
+    this.scareGfx = this.add.graphics().setDepth(2003); // the trap's fake scare flashes above everything
     this.playerGfx = this.add.graphics().setDepth(1001); // above the fog so the player is always visible
     this.fog = new FogOverlay(this);
     this.buildHud();
@@ -125,6 +145,8 @@ export class PlayScene extends Phaser.Scene {
       else if (this.mode === 'escaped') this.startNewRun();
     });
     this.input.keyboard.on('keydown-E', () => this.tryInteract());
+    this.input.keyboard.on('keydown-Q', () => this.useItemKey('eyedrops'));
+    this.input.keyboard.on('keydown-F', () => this.useItemKey('stim'));
     this.input.keyboard.on('keydown-R', (event) => {
       if (!event.repeat) this.onNewRunKey(); // a held key auto-repeats; only a real second press confirms
     });
@@ -186,7 +208,8 @@ export class PlayScene extends Phaser.Scene {
 
   beginTransition() {
     this.mode = 'transition';
-    const run = advanceZone({ ...this.run, hasKey: this.hasKey, heard: this.radio.heardEvents() });
+    const left = { ...this.run, hasKey: this.hasKey, heard: this.radio.heardEvents() };
+    const run = advanceZone(recordZone(left, { outcome: outcomeFor(this.instruction, this.followed), items: this.items }));
     saveRun(run, this.storage); // saved now, so a reload during the fade already resumes in the next zone
     this.cameras.main.fadeOut(TRANSITION_MS, 0, 0, 0);
     this.time.delayedCall(TRANSITION_MS, () => this.scene.restart({ run, fadeIn: true }));
@@ -210,14 +233,17 @@ export class PlayScene extends Phaser.Scene {
       iy /= len;
     }
     const running = k.SHIFT.isDown && moving && canRun(this.stamina);
-    this.stamina = stepStamina(this.stamina, dt, running);
+    this.stimLeft = Math.max(0, this.stimLeft - dt);
+    this.stamina = stepStamina(this.stamina, dt, running, this.stimLeft > 0);
     const speed = running ? PLAYER.runSpeed : PLAYER.walkSpeed;
     this.player = moveWithCollision(this.grid, this.player, ix * speed * dt, iy * speed * dt, PLAYER.radius);
 
     this.facing = this.computeFacing();
 
     this.blink = stepBlink(this.blink, dt);
-    const blinking = isBlinking(this.blink);
+    this.stepSideRoom(dt);
+    // A blink and the trap's blackout are the same to the monsters: the player sees nothing.
+    const blinking = this.isBlind();
     this.observed = this.scp.map((s) => !blinking && canSee(this.grid, this.player, this.facing, s.pos));
     this.scp = this.scp.map((s, i) =>
       step173(s, { dt, grid: this.baseGrid, player: this.player, observed: this.observed[i], activation: this.activation }),
@@ -233,6 +259,8 @@ export class PlayScene extends Phaser.Scene {
       this.pickUpKey();
     }
     this.warnNear096(now);
+    this.tellInstruction(now);
+    this.pickUpItems();
     // Deaths are checked before the gate, so a touch in the same frame as stepping into the gate kills.
     if (this.scp.some((s) => isLethal(s, this.player)) || this.s096.some((s) => isLethal096(s, this.player))) this.die();
     const { exit } = this.map;
@@ -245,6 +273,81 @@ export class PlayScene extends Phaser.Scene {
 
   refreshGrid() {
     this.grid = withDoors(this.baseGrid, this.doors);
+  }
+
+  isBlind() {
+    return isBlinking(this.blink) || Boolean(this.trap && trapView(this.trap).dark);
+  }
+
+  /**
+   * Side room (D82, D78): standing on its floor counts as following the instruction. A false room traps the player:
+   * its door locks on the first frame nobody stands in the doorway, stays shut for TRAP.lockSeconds (E does nothing),
+   * the lights die for TRAP.darkSeconds with fake-scare flashes, then the door opens again unless it was broken.
+   */
+  stepSideRoom(dt) {
+    if (this.trap) {
+      this.trap = stepTrap(this.trap, dt);
+      const view = trapView(this.trap);
+      if (view.flash && !this.flashOn) playBeep(70, 150, 0.08);
+      this.flashOn = view.flash;
+      if (view.over) {
+        const door = this.doors[this.map.sideRoom.doorId];
+        if (door && !door.broken) this.setDoorState(door.id, openDoor(door));
+        this.trap = null;
+        this.flashOn = false;
+      }
+    }
+    if (!this.sideTiles.has(`${tileOf(this.player.x)},${tileOf(this.player.y)}`)) return;
+    this.followed = true;
+    if (!this.instruction || this.instruction.truthful || this.trap || this.trapDone) return;
+    const doorId = this.map.sideRoom.doorId;
+    const door = doorId === null ? null : this.doors[doorId];
+    if (door && occupies(door, this.doorActors())) return; // wait until the doorway is clear
+    if (door && !door.broken) this.setDoorState(door.id, { ...door, state: 'locked' });
+    this.trap = createTrap();
+    this.trapDone = true;
+    this.radio.fire('trap', this.nowMs());
+    playBeep(60, 300, 0.08);
+  }
+
+  /** The instruction plays once per attempt, the first time the player is within SIDE_ROOM.warnTiles of the door. */
+  tellInstruction(now) {
+    if (!this.instruction || this.told) return;
+    const side = this.map.sideRoom;
+    const targets = side.doorId === null ? side.tiles : this.map.doors[side.doorId];
+    const from = { tx: tileOf(this.player.x), ty: tileOf(this.player.y) };
+    const near = targets.some((t) => {
+      if (Math.abs(t.tx - from.tx) + Math.abs(t.ty - from.ty) > SIDE_ROOM.warnTiles) return false;
+      const path = findPath(this.baseGrid, from, t);
+      return path !== null && path.length <= SIDE_ROOM.warnTiles;
+    });
+    if (!near) return;
+    this.told = true;
+    this.radio.fire('instruction', now, instructionLine(this.instruction, directionTo(this.player, side.center)));
+  }
+
+  pickUpItems() {
+    const before = this.mapItems.length;
+    this.mapItems = this.mapItems.filter((it) => {
+      if (Math.hypot(this.player.x - it.pos.x, this.player.y - it.pos.y) > ITEMS.pickupDist) return true;
+      this.items = addItem(this.items, it.kind);
+      return false;
+    });
+    if (this.mapItems.length !== before) playBeep(1320, 120);
+  }
+
+  /** Q: eye drops empty the blink gauge. F: a stimulant fills stamina and stops its drain for ITEMS.stimSeconds. */
+  useItemKey(kind) {
+    if (this.mode !== 'playing') return;
+    const { items, used } = useItem(this.items, kind);
+    if (!used) return;
+    this.items = items;
+    if (kind === 'eyedrops') this.blink = applyEyedrops(this.blink);
+    else {
+      this.stamina = fillStamina(this.stamina);
+      this.stimLeft = ITEMS.stimSeconds;
+    }
+    playBeep(kind === 'eyedrops' ? 990 : 440, 90);
   }
 
   /** A 173 paths straight through doors; whatever blocking door its square overlaps swings open. */
@@ -360,6 +463,8 @@ export class PlayScene extends Phaser.Scene {
       return;
     }
     const door = nearestDoor(this.doors, this.player);
+    // The trapped side-room door ignores E until the trap lets go.
+    if (door && this.trap && trapView(this.trap).locked && door.id === this.map.sideRoom.doorId) return;
     if (door) {
       const next = cycleDoor(door, occupies(door, this.doorActors()));
       if (next === door) return;
@@ -447,7 +552,18 @@ export class PlayScene extends Phaser.Scene {
     });
     drawDoors(this.doorGfx, this.doors, this.breakingBars());
 
-    this.fog.draw(visibilityPolygon(this.grid, this.player, this.facing), cam, isBlinking(this.blink));
+    this.itemGfx.clear();
+    for (const it of this.mapItems) this.itemGfx.fillStyle(COLORS[it.kind], 1).fillRect(it.pos.x - 3, it.pos.y - 3, 6, 6);
+    // The trap's fake scare: a 173-shaped silhouette right in front of the player, only during a flash window.
+    this.scareGfx.clear();
+    if (this.trap && trapView(this.trap).flash) {
+      const fx = x + Math.cos(this.facing) * 24;
+      const fy = y + Math.sin(this.facing) * 24;
+      this.scareGfx.fillStyle(COLORS.scare, 1).fillRect(fx - 6, fy - 9, 12, 18);
+      this.scareGfx.fillStyle(0x000000, 1).fillRect(fx - 4, fy - 5, 3, 2).fillRect(fx + 1, fy - 5, 3, 2);
+    }
+
+    this.fog.draw(visibilityPolygon(this.grid, this.player, this.facing), cam, this.isBlind());
     this.renderHud();
   }
 
@@ -481,6 +597,10 @@ export class PlayScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(2002)
       .setVisible(false);
+    this.itemText = this.add
+      .text(160, VIEW_H - 25, '', { fontFamily: FONT, fontSize: '8px', color: '#b0b0c0' })
+      .setScrollFactor(0)
+      .setDepth(2001);
     this.keyText = this.add
       .text(VIEW_W - 8, 8, '[카드키]', { fontFamily: FONT, fontSize: '10px', color: '#f0d040' })
       .setOrigin(1, 0)
@@ -512,6 +632,7 @@ export class PlayScene extends Phaser.Scene {
     bar(8, VIEW_H - 14, this.stamina.value, this.stamina.exhausted ? 0xc04040 : 0x60c060);
     bar(84, VIEW_H - 14, this.blink.gauge, this.blink.gauge >= 0.8 ? 0xe0c040 : 0x8080e0);
     this.keyText.setVisible(this.hasKey);
+    this.itemText.setText(`안약 ${this.items.eyedrops} · 각성제 ${this.items.stim}`);
 
     const line = this.radio.current(this.nowMs());
     if (line !== this.shownLine) {

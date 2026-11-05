@@ -2,6 +2,8 @@ import { isBlinking } from './logic/blink.js';
 import { createRadio } from './logic/radio.js';
 import { create173 } from './logic/scp173.js';
 import { create096 } from './logic/scp096.js';
+import { addItem } from './logic/items.js';
+import { trapView } from './logic/trap.js';
 import { parseRun, serializeRun } from './logic/run.js';
 
 /** Small string hash so smoke checks can compare two generated maps. */
@@ -38,6 +40,14 @@ export function installDebug(scene) {
         breaking: s.breaking ? s.breaking.left : null,
       })),
       hasKey: scene.hasKey,
+      items: { ...scene.items },
+      mapItems: scene.mapItems.map((it) => ({ kind: it.kind, pos: { ...it.pos } })),
+      stimLeft: scene.stimLeft,
+      instruction: scene.instruction
+        ? { truthful: scene.instruction.truthful, item: scene.instruction.item, told: scene.told, followed: scene.followed }
+        : null,
+      sideRoom: scene.map.sideRoom ? { doorId: scene.map.sideRoom.doorId, center: { ...scene.map.sideRoom.center } } : null,
+      trap: scene.trap ? { t: scene.trap.t, ...trapView(scene.trap) } : null,
       radio: scene.radio.current(scene.nowMs()),
       exitSolid: scene.grid[scene.map.exit.ty][scene.map.exit.tx],
       run: scene.run ? structuredClone(scene.run) : null,
@@ -86,6 +96,12 @@ export function installDebug(scene) {
     },
     rage096(i) {
       scene.s096[i] = { ...scene.s096[i], mode: 'rage', breaking: null };
+    },
+    giveItem(kind) {
+      scene.items = addItem(scene.items, kind);
+    },
+    setFollowed(v) {
+      scene.followed = v;
     },
     setBlinkGauge(v) {
       scene.blink = { ...scene.blink, gauge: v };

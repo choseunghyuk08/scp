@@ -27,4 +27,21 @@ door[4][30] = '>';
 
 const DOOR_ROOM = door.map((row) => row.join(''));
 
-module.exports = { OPEN_ROOM, DOOR_ROOM };
+// 40x9 side-room map (v0.4): the DOOR_ROOM wall at x=23 with its 2-tile door, the right part x 24..38 all side-room
+// floor ','; eye drops 'a' at (30,4); exit X at (20,7) in the left room; no 173, no 096.
+const side = Array.from({ length: DH }, (_, y) =>
+  Array.from({ length: DW }, (_, x) => {
+    if (x === 0 || y === 0 || x === DW - 1 || y === DH - 1 || x === 23) return '#';
+    return x > 23 ? ',' : '.';
+  }),
+);
+side[4][23] = 'D';
+side[5][23] = 'D';
+side[4][4] = '@';
+side[1][1] = 'K';
+side[7][20] = 'X';
+side[4][30] = 'a';
+
+const SIDE_ROOM = side.map((row) => row.join(''));
+
+module.exports = { OPEN_ROOM, DOOR_ROOM, SIDE_ROOM };
