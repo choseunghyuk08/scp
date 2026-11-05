@@ -32,6 +32,10 @@ export const SPAWN_KEY_MIN_TILES = 5;
 export const TRANSITION_MS = 400;
 export const R_CONFIRM_MS = 3000;
 
+// v0.4 items and the false side room's trap (D77, D78). Flashes stay at most 3 per second (spec §12).
+export const ITEMS = { pickupDist: 10, stimSeconds: 5 };
+export const TRAP = { lockSeconds: 8, darkSeconds: 1.5, flashes: [[0.3, 0.42], [0.9, 1.02]] };
+
 // v0.3 doors
 export const DOOR_INTERACT_DIST = 24;
 export const SCP096 = {

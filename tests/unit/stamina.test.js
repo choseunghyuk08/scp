@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStamina, canRun, stepStamina } from '../../src/logic/stamina.js';
+import { createStamina, canRun, fillStamina, stepStamina } from '../../src/logic/stamina.js';
 
 const run = (s, seconds, running, dt = 0.1) => {
   for (let i = 0; i < Math.round(seconds / dt); i++) s = stepStamina(s, dt, running);
@@ -69,4 +69,27 @@ test('stepStamina returns a new object', () => {
   const s = createStamina();
   assert.notEqual(stepStamina(s, 0.1, false), s);
   assert.equal(s.value, 1);
+});
+
+test('fillStamina fills and clears exhaustion but keeps the idle timer', () =>
+  assert.deepEqual(fillStamina({ value: 0.1, idleSeconds: 2, exhausted: true }), { value: 1, idleSeconds: 2, exhausted: false }));
+
+test('boosted running does not drain and clears exhaustion', () => {
+  let s = { value: 0.1, idleSeconds: 0, exhausted: true };
+  s = fillStamina(s);
+  for (let i = 0; i < 100; i++) s = stepStamina(s, 0.05, true, true);
+  assert.deepEqual([s.value, s.exhausted], [1, false]);
+});
+
+test('a boost never lowers a partly drained bar and recovery still works while boosted', () => {
+  let s = { value: 0.5, idleSeconds: 0, exhausted: false };
+  for (let i = 0; i < 20; i++) s = stepStamina(s, 0.05, true, true);
+  assert.equal(s.value, 0.5);
+  s = run(s, 4, false);
+  assert.ok(s.value > 0.5);
+});
+
+test('without the boost the same run drains as before', () => {
+  const s = run(createStamina(), 1, true);
+  assert.ok(Math.abs(s.value - 0.75) < 1e-9, `value ${s.value}`);
 });

@@ -8,8 +8,17 @@ export function canRun(s) {
   return !s.exhausted && s.value > 0;
 }
 
-/** `running` = the player wants to run and is moving. Ignored while exhausted. */
-export function stepStamina(s, dt, running) {
+/** The stimulant: a full bar and no exhaustion; the regen timer carries on. */
+export function fillStamina(s) {
+  return { ...s, value: 1, exhausted: false };
+}
+
+/**
+ * `running` = the player wants to run and is moving. Ignored while exhausted.
+ * `boosted` (stimulant active): running costs nothing and the player is never exhausted; recovery works as usual.
+ */
+export function stepStamina(s, dt, running, boosted = false) {
+  if (boosted && running) return { value: s.value, idleSeconds: 0, exhausted: false };
   if (running && canRun(s)) {
     const value = Math.max(0, s.value - dt / STAMINA.drainSeconds);
     return { value, idleSeconds: 0, exhausted: value <= 0 };
@@ -18,5 +27,5 @@ export function stepStamina(s, dt, running) {
   // Only the time spent past the regen delay counts toward recovery.
   const regenTime = Math.min(dt, Math.max(0, idleSeconds - STAMINA.regenDelaySeconds));
   const value = Math.min(1, s.value + regenTime / STAMINA.regenSeconds);
-  return { value, idleSeconds, exhausted: s.exhausted && value < STAMINA.resumeAt };
+  return { value, idleSeconds, exhausted: !boosted && s.exhausted && value < STAMINA.resumeAt };
 }
