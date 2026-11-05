@@ -8,6 +8,7 @@ import {
   keyZone,
   parseRun,
   parseSeedParam,
+  recordZone,
   registerDeath,
   serializeRun,
   zoneSpec,
@@ -16,7 +17,7 @@ import {
 const seeds = (n) => Array.from({ length: n }, (_, i) => i * 7919 + 3);
 
 test('createRun starts at the first zone with nothing earned', () => {
-  assert.deepEqual(createRun(5), { seed: 5, zone: 0, attempt: 0, hasKey: false, heard: [] });
+  assert.deepEqual(createRun(5), { seed: 5, zone: 0, attempt: 0, hasKey: false, heard: [], items: { eyedrops: 0, stim: 0 }, outcomes: [] });
 });
 
 test('keyZone is 1 or 2, deterministic, and both occur over 1000 seeds', () => {
@@ -71,17 +72,19 @@ test('activationFor: tutorial sighting, others radius 14', () => {
   assert.equal(AGGRO_TILES, 14);
 });
 
+const NO_ITEMS = { items: { eyedrops: 0, stim: 0 }, outcomes: [] };
+
 test('advanceZone moves one zone, resets attempt, keeps seed/hasKey/heard, throws at the final zone', () => {
-  const run = { seed: 5, zone: 1, attempt: 3, hasKey: true, heard: ['start'] };
-  assert.deepEqual(advanceZone(run), { seed: 5, zone: 2, attempt: 0, hasKey: true, heard: ['start'] });
+  const run = { seed: 5, zone: 1, attempt: 3, hasKey: true, heard: ['start'], ...NO_ITEMS };
+  assert.deepEqual(advanceZone(run), { seed: 5, zone: 2, attempt: 0, hasKey: true, heard: ['start'], ...NO_ITEMS });
   assert.throws(() => advanceZone({ ...run, zone: ZONE_COUNT - 1 }), RangeError);
 });
 
 test('registerDeath adds an attempt and replaces heard; neither function mutates its input', () => {
-  const run = { seed: 5, zone: 1, attempt: 3, hasKey: true, heard: ['start'] };
+  const run = { seed: 5, zone: 1, attempt: 3, hasKey: true, heard: ['start'], ...NO_ITEMS };
   const snapshot = structuredClone(run);
   const died = registerDeath(run, ['start', 'seen173']);
-  assert.deepEqual(died, { seed: 5, zone: 1, attempt: 4, hasKey: true, heard: ['start', 'seen173'] });
+  assert.deepEqual(died, { seed: 5, zone: 1, attempt: 4, hasKey: true, heard: ['start', 'seen173'], ...NO_ITEMS });
   advanceZone(run);
   assert.deepEqual(run, snapshot);
   const heard = ['gotKey'];
@@ -90,14 +93,14 @@ test('registerDeath adds an attempt and replaces heard; neither function mutates
 });
 
 test('serialize/parse round trip', () => {
-  const run = { seed: 4294967295, zone: 3, attempt: 12, hasKey: true, heard: ['start', 'seen173', 'gotKey'] };
+  const run = { seed: 4294967295, zone: 3, attempt: 12, hasKey: true, heard: ['start', 'seen173', 'gotKey'], ...NO_ITEMS };
   assert.deepEqual(parseRun(serializeRun(run)), run);
   assert.deepEqual(parseRun(serializeRun(createRun(0))), createRun(0));
 });
 
 test('parseRun rejects garbage without throwing', () => {
   const base = { v: 1, seed: 5, zone: 1, attempt: 2, hasKey: true, heard: ['start'] };
-  assert.deepEqual(parseRun(JSON.stringify(base)), { seed: 5, zone: 1, attempt: 2, hasKey: true, heard: ['start'] });
+  assert.deepEqual(parseRun(JSON.stringify(base)), { seed: 5, zone: 1, attempt: 2, hasKey: true, heard: ['start'], ...NO_ITEMS });
   const without = (key) => {
     const copy = { ...base };
     delete copy[key];
@@ -137,4 +140,49 @@ test('zoneSpec: zones 2 and 3 have one SCP-096 and four rooms; zones 0 and 1 hav
 test('every zone has exactly one SCP-173 now', () => {
   assert.deepEqual(ZONE_SCP173, [1, 1, 1, 1]);
   for (let i = 0; i < ZONE_COUNT; i++) assert.equal(zoneSpec(5, i).scp173Count, 1);
+});
+
+test('createRun starts with no items and no outcomes', () =>
+  assert.deepEqual([createRun(7).items, createRun(7).outcomes], [{ eyedrops: 0, stim: 0 }, []]));
+
+test('recordZone stores the outcome at the zone index and copies the items', () => {
+  const run = { ...createRun(1), zone: 2 };
+  const items = { eyedrops: 1, stim: 0 };
+  const out = recordZone(run, { outcome: 'followed', items });
+  assert.deepEqual(out.outcomes, ['none', 'none', 'followed']);
+  assert.deepEqual(out.items, { eyedrops: 1, stim: 0 });
+  items.eyedrops = 9;
+  assert.equal(out.items.eyedrops, 1);
+  assert.deepEqual(run.outcomes, []);
+  assert.deepEqual(recordZone({ ...out, zone: 1 }, { outcome: 'refused', items }).outcomes, ['none', 'refused', 'followed']);
+});
+
+test('advanceZone and registerDeath keep items and outcomes', () => {
+  const run = { ...createRun(3), zone: 1, items: { eyedrops: 2, stim: 1 }, outcomes: ['followed'] };
+  for (const next of [advanceZone(run), registerDeath(run, [])]) {
+    assert.deepEqual([next.items, next.outcomes], [{ eyedrops: 2, stim: 1 }, ['followed']]);
+    next.items.eyedrops = 0;
+    next.outcomes.push('refused');
+  }
+  assert.deepEqual([run.items, run.outcomes], [{ eyedrops: 2, stim: 1 }, ['followed']]);
+});
+
+test('items and outcomes survive serialize/parse', () => {
+  const run = { ...createRun(11), zone: 2, items: { eyedrops: 3, stim: 1 }, outcomes: ['followed', 'refused', 'none'] };
+  assert.deepEqual(parseRun(serializeRun(run)), run);
+});
+
+test('a v0.3 save without items/outcomes loads with defaults', () => {
+  const old = JSON.stringify({ v: 1, seed: 5, zone: 1, attempt: 2, hasKey: false, heard: ['start'] });
+  assert.deepEqual(parseRun(old), { seed: 5, zone: 1, attempt: 2, hasKey: false, heard: ['start'], items: { eyedrops: 0, stim: 0 }, outcomes: [] });
+});
+
+test('broken items or outcomes discard the save', () => {
+  const base = { v: 1, seed: 5, zone: 0, attempt: 0, hasKey: false, heard: [] };
+  const bad = [
+    { items: { eyedrops: -1, stim: 0 } }, { items: { eyedrops: 1 } }, { items: { eyedrops: 1.5, stim: 0 } },
+    { items: { eyedrops: 100, stim: 0 } }, { items: 'x' }, { items: null }, { items: [] },
+    { outcomes: ['maybe'] }, { outcomes: {} }, { outcomes: null }, { outcomes: Array(ZONE_COUNT + 1).fill('none') },
+  ];
+  for (const b of bad) assert.equal(parseRun(JSON.stringify({ ...base, ...b })), null, JSON.stringify(b));
 });

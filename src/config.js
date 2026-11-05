@@ -21,6 +21,9 @@ export const ZONE_MIN_PATH = [90, 120, 120, 120];
 export const ZONE_SCP173 = [1, 1, 1, 1];
 export const ZONE_SCP096 = [0, 0, 1, 1];
 export const SAVE_KEY = 'gaze.run.v1';
+// v0.4: endings seen across runs, kept apart from the run checkpoint (D85).
+export const ENDINGS_KEY = 'gaze.endings.v1';
+export const ENDING_IDS = ['discern', 'alone', 'half', 'faithful'];
 export const ZONE_COLS = 64;
 export const ZONE_ROWS = 40;
 export const MAX_GEN_ATTEMPTS = 50;

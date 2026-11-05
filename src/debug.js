@@ -2,6 +2,7 @@ import { isBlinking } from './logic/blink.js';
 import { createRadio } from './logic/radio.js';
 import { create173 } from './logic/scp173.js';
 import { create096 } from './logic/scp096.js';
+import { parseRun, serializeRun } from './logic/run.js';
 
 /** Small string hash so smoke checks can compare two generated maps. */
 function mapHash(map) {
@@ -70,7 +71,8 @@ export function installDebug(scene) {
       scene.scene.restart({ rows, ...extra });
     },
     startRun(run) {
-      scene.scene.restart({ run });
+      // Smoke checks may pass a pre-v0.4 run (no items/outcomes); round-trip it through the save format to fill them in.
+      scene.scene.restart({ run: parseRun(serializeRun(run)) ?? run });
     },
     advance(ms) {
       scene.update(scene.time.now, ms);

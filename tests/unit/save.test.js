@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFakeStorage } from '../helpers/storage.js';
-import { SAVE_KEY } from '../../src/config.js';
+import { ENDINGS_KEY, ENDING_IDS, SAVE_KEY } from '../../src/config.js';
 import { createRun, serializeRun } from '../../src/logic/run.js';
-import { bootRun, clearRun, getStorage, loadRun, saveRun } from '../../src/save.js';
+import { bootRun, clearRun, getStorage, loadEndings, loadRun, saveEnding, saveRun } from '../../src/save.js';
 
-const sample = { seed: 77, zone: 2, attempt: 3, hasKey: true, heard: ['start', 'seen173'] };
+const sample = { seed: 77, zone: 2, attempt: 3, hasKey: true, heard: ['start', 'seen173'], items: { eyedrops: 1, stim: 0 }, outcomes: ['followed', 'refused'] };
 const neverRandom = () => {
   throw new Error('randomSeed should not be called');
 };
@@ -101,4 +101,42 @@ test('bootRun with a corrupt save or unusable storage starts a new run without t
   const broken = createFakeStorage({ failOn: ['get', 'set', 'remove'] });
   assert.deepEqual(bootRun({ search: '?seed=5', storage: broken, randomSeed: neverRandom }), createRun(5));
   assert.deepEqual(bootRun({ search: '', storage: broken, randomSeed: () => 11 }), createRun(11));
+});
+
+test('the endings key is gaze.endings.v1 and there are four endings', () => {
+  assert.equal(ENDINGS_KEY, 'gaze.endings.v1');
+  assert.deepEqual(ENDING_IDS, ['discern', 'alone', 'half', 'faithful']);
+});
+
+test('saveEnding records each ending once in first-seen order', () => {
+  const s = createFakeStorage();
+  assert.deepEqual(loadEndings(s), []);
+  saveEnding('half', s);
+  saveEnding('alone', s);
+  assert.deepEqual(saveEnding('half', s), ['half', 'alone']);
+  assert.deepEqual(loadEndings(s), ['half', 'alone']);
+});
+
+test('loadEndings ignores corrupt values and unknown ids', () => {
+  for (const text of ['x', '{"a":1}', '["half","nope"]', '[1]', 'null']) {
+    const s = createFakeStorage();
+    s.data.set(ENDINGS_KEY, text);
+    assert.deepEqual(loadEndings(s), [], text);
+  }
+  assert.deepEqual(loadEndings(null), []);
+});
+
+test('clearRun keeps the seen endings', () => {
+  const s = createFakeStorage();
+  saveEnding('discern', s);
+  saveRun(sample, s);
+  clearRun(s);
+  assert.deepEqual(loadEndings(s), ['discern']);
+});
+
+test('throwing storage never throws from loadEndings/saveEnding', () => {
+  const s = createFakeStorage({ failOn: ['get', 'set'] });
+  assert.deepEqual(loadEndings(s), []);
+  assert.deepEqual(saveEnding('alone', s), ['alone']);
+  assert.deepEqual(saveEnding('alone', null), ['alone']);
 });
