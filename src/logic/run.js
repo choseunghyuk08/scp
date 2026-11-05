@@ -1,10 +1,11 @@
 import { AGGRO_TILES, ZONE_COUNT, ZONE_MIN_PATH, ZONE_SCP096, ZONE_SCP173 } from '../config.js';
+import { instructionPlan } from './instructions.js';
 import { RADIO_LINES } from './radio.js';
 import { hashSeed } from './rng.js';
 
 // Run = { seed, zone, attempt, hasKey, heard, items: {eyedrops, stim}, outcomes: Outcome[] } — everything that must
 // survive a death or a reload. Outcome = 'followed' | 'refused' | 'none', one per finished zone (D82, D85).
-// ZoneSpec = { index, isTutorial, isFinal, hasKey, roomCount, minPath, scp173Count, scp096Count }.
+// ZoneSpec = { index, isTutorial, isFinal, hasKey, roomCount, minPath, scp173Count, scp096Count, instruction }.
 
 const SAVE_VERSION = 1;
 const MAX_SEED = 4294967295;
@@ -35,6 +36,7 @@ export function zoneSpec(seed, index) {
     minPath: ZONE_MIN_PATH[index],
     scp173Count: ZONE_SCP173[index],
     scp096Count: ZONE_SCP096[index],
+    instruction: instructionPlan(seed)[index],
   };
 }
 

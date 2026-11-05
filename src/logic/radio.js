@@ -7,9 +7,12 @@ export const RADIO_LINES = {
   gotKey: '카드키를 확보했다. 출구 문으로 가서 E를 눌러라.',
   noKey: '출구가 잠겨 있다. 카드키부터 찾아라.',
   near096: 'SCP-096이다. 얼굴을 보지 마라.',
+  trap: '문이 잠겼군. 기다려라.',
 };
 
-const REPEATABLE = new Set(['noKey']);
+// Repeatable events are never recorded as heard; they only skip a fire while the same event is showing or queued.
+// 'instruction' has no fixed line: its text (direction, item, rule) is passed to fire().
+const REPEATABLE = new Set(['noKey', 'instruction', 'trap']);
 
 /**
  * Lines show one at a time for RADIO_LINE_MS each, in the order they were fired.
@@ -21,7 +24,7 @@ export function createRadio(alreadyHeard = []) {
   let lastEndAt = 0;
 
   return {
-    fire(event, nowMs) {
+    fire(event, nowMs, text = RADIO_LINES[event]) {
       if (REPEATABLE.has(event)) {
         if (scheduled.some((item) => item.event === event && item.endAt > nowMs)) return;
       } else {
@@ -30,7 +33,7 @@ export function createRadio(alreadyHeard = []) {
       }
       const startAt = Math.max(nowMs, lastEndAt);
       const endAt = startAt + RADIO_LINE_MS;
-      scheduled.push({ event, text: RADIO_LINES[event], startAt, endAt });
+      scheduled.push({ event, text, startAt, endAt });
       lastEndAt = endAt;
     },
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRadio, RADIO_LINES } from '../../src/logic/radio.js';
 
 test('every radio event has a Korean line', () => {
-  assert.deepEqual(Object.keys(RADIO_LINES).sort(), ['blinkWarning', 'gotKey', 'near096', 'noKey', 'seen173', 'start']);
+  assert.deepEqual(Object.keys(RADIO_LINES).sort(), ['blinkWarning', 'gotKey', 'near096', 'noKey', 'seen173', 'start', 'trap']);
   for (const line of Object.values(RADIO_LINES)) assert.match(line, /[가-힣]/);
 });
 
@@ -94,4 +94,19 @@ test('near096 is a non-repeatable Korean line', () => {
   r.fire('near096', 5000);
   assert.equal(r.current(5000), null);
   assert.deepEqual(r.heardEvents(), ['near096']);
+});
+
+test('the trap line', () => assert.equal(RADIO_LINES.trap, '문이 잠겼군. 기다려라.'));
+
+test('instruction and trap lines can repeat and are never heard', () => {
+  const r = createRadio();
+  r.fire('instruction', 0, 'A');
+  r.fire('instruction', 100, 'A');
+  assert.equal(r.current(0), 'A');
+  assert.equal(r.current(4000), null, 'not queued twice while showing');
+  r.fire('instruction', 5000, 'B');
+  assert.equal(r.current(5000), 'B');
+  r.fire('trap', 9000);
+  assert.equal(r.current(9000), RADIO_LINES.trap);
+  assert.deepEqual(r.heardEvents(), []);
 });

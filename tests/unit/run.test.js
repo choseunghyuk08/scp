@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { instructionPlan } from '../../src/logic/instructions.js';
 import assert from 'node:assert/strict';
 import { AGGRO_TILES, ZONE_COUNT, ZONE_MIN_PATH, ZONE_SCP096, ZONE_SCP173 } from '../../src/config.js';
 import {
@@ -185,4 +186,8 @@ test('broken items or outcomes discard the save', () => {
     { outcomes: ['maybe'] }, { outcomes: {} }, { outcomes: null }, { outcomes: Array(ZONE_COUNT + 1).fill('none') },
   ];
   for (const b of bad) assert.equal(parseRun(JSON.stringify({ ...base, ...b })), null, JSON.stringify(b));
+});
+
+test('zoneSpec carries that zone instruction', () => {
+  for (const zone of [0, 1, 2, 3]) assert.deepEqual(zoneSpec(9, zone).instruction, instructionPlan(9)[zone]);
 });
